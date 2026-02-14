@@ -5,6 +5,8 @@ import { onMount } from 'svelte';
 	import {
 		DEFAULT_MODELS,
 		PROVIDER_LABELS,
+		fetchModelCatalog,
+		getDefaultApiKey,
 		generateChatCompletion,
 		type ProviderName
 	} from '$lib/chat/providers';
@@ -48,7 +50,6 @@ import { onMount } from 'svelte';
 		PAYLOAD_DRAFT_KEY,
 		PROVIDERS,
 		RECENT_HISTORY_LIMIT,
-		STARTER_PROMPTS,
 		THEME_KEY
 	} from '$lib/constants/chat-page';
 	import { formatRetrievedContext, retrieveTopChunks, type RetrievedChunk } from '$lib/rag/retrieval';
@@ -57,6 +58,9 @@ import { onMount } from 'svelte';
 	let provider: ProviderName = 'openai';
 	let apiKey = '';
 	let model = DEFAULT_MODELS.openai;
+	let modelOptions: string[] = [];
+	let isModelCatalogLoading = false;
+	let modelCatalogError = '';
 	let payload: RagPayload = createDefaultPayload();
 	let payloadJson = payloadToPrettyJson(payload);
 	let payloadError = '';
@@ -104,6 +108,12 @@ import { onMount } from 'svelte';
 	let urlLength = 0;
 	let urlRisk: 'ok' | 'warn' | 'danger' = 'ok';
 	let payloadDigest = '';
+	let modelCatalogTimer: ReturnType<typeof setTimeout> | null = null;
+	const modelCatalogCache: Record<ProviderName, { key: string; models: string[] } | null> = {
+		openai: null,
+		anthropic: null,
+		gemini: null
+	};
 
 	$: ragIndex = createRagIndexForPayload(payload);
 	$: hasApiKey = apiKey.trim().length > 0;
@@ -192,17 +202,15 @@ import { onMount } from 'svelte';
 		composerTextarea?.focus();
 	}
 
-	function useStarterPrompt(nextPrompt: string) {
-		prompt = nextPrompt;
-		focusComposer();
-	}
-
 	function openSettings(tab: SettingsTab = 'connection', presentation?: SettingsPresentation) {
 		settingsTab = tab;
 		settingsPresentation = presentation ?? getDefaultSettingsPresentation(isNarrowViewport, isCompactViewport);
 		settingsOpen = true;
 		mobileContextOpen = false;
 		mobileLeftRailOpen = false;
+		if (tab === 'connection') {
+			void refreshModelCatalog();
+		}
 	}
 
 	function closeSettings() {
@@ -264,6 +272,69 @@ import { onMount } from 'svelte';
 		overlapInput = payload.retrieval.overlap;
 	}
 
+	function getCurrentApiKeyForModelLookup(providerName: ProviderName): string {
+		const stored = persistApiKey ? window.localStorage.getItem(storageKeyForApi(providerName)) ?? '' : '';
+		return (apiKey || stored || getDefaultApiKey(providerName)).trim();
+	}
+
+	function normalizeAndSelectModel(nextModel: string, options: string[], providerName: ProviderName) {
+		const defaultModel = DEFAULT_MODELS[providerName];
+		if (options.includes(nextModel)) {
+			return nextModel;
+		}
+		if (defaultModel && options.includes(defaultModel)) {
+			return defaultModel;
+		}
+		return options[0] || nextModel || defaultModel;
+	}
+
+	async function refreshModelCatalog() {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		const key = getCurrentApiKeyForModelLookup(provider);
+		if (!key) {
+			modelOptions = [];
+			model = model.trim() || DEFAULT_MODELS[provider];
+			modelCatalogError = 'API key is required to load models.';
+			return;
+		}
+		const cached = modelCatalogCache[provider];
+		if (cached && cached.key === key) {
+			modelOptions = cached.models;
+			model = normalizeAndSelectModel(model, modelOptions, provider);
+			saveProviderSettings();
+			modelCatalogError = '';
+			return;
+		}
+
+		isModelCatalogLoading = true;
+		modelCatalogError = '';
+		try {
+			const models = await fetchModelCatalog(provider, key);
+			modelCatalogCache[provider] = { key, models };
+			modelOptions = models;
+			model = normalizeAndSelectModel(model, modelOptions, provider);
+			if (!model.trim()) {
+				model = DEFAULT_MODELS[provider];
+			}
+			saveProviderSettings();
+		} catch (error) {
+			modelCatalogError = error instanceof Error ? error.message : 'Failed to fetch model list.';
+		} finally {
+			isModelCatalogLoading = false;
+		}
+	}
+
+	function scheduleModelCatalogRefresh() {
+		if (modelCatalogTimer) {
+			clearTimeout(modelCatalogTimer);
+		}
+		modelCatalogTimer = setTimeout(() => {
+			void refreshModelCatalog();
+		}, 700);
+	}
+
 	function loadLocalSettings() {
 		if (typeof window === 'undefined') {
 			return;
@@ -276,7 +347,9 @@ import { onMount } from 'svelte';
 		persistApiKey = shouldPersistApiKeyForProvider(provider);
 
 		model = window.localStorage.getItem(storageKeyForModel(provider)) ?? DEFAULT_MODELS[provider];
-		apiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
+		const storedApiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
+		apiKey = storedApiKey.trim() || getDefaultApiKey(provider);
+		void refreshModelCatalog();
 	}
 
 	function saveProviderSettings() {
@@ -443,6 +516,26 @@ import { onMount } from 'svelte';
 		status = 'Chat deleted';
 	}
 
+	function renameSession(sessionId: string, nextTitle: string) {
+		const index = chatSessions.findIndex((session) => session.id === sessionId);
+		if (index < 0) {
+			return;
+		}
+		const title = nextTitle.trim();
+		if (!title) {
+			status = 'Conversation title is empty. Keeping previous title.';
+			return;
+		}
+		chatSessions[index] = {
+			...chatSessions[index],
+			title,
+			updatedAt: Date.now()
+		};
+		chatSessions = [...chatSessions];
+		saveChatSessions();
+		status = 'Conversation renamed';
+	}
+
 	function savePayloadDraft() {
 		if (typeof window === 'undefined') {
 			return;
@@ -553,19 +646,22 @@ import { onMount } from 'svelte';
 		if (typeof window !== 'undefined') {
 			model = window.localStorage.getItem(storageKeyForModel(provider)) ?? DEFAULT_MODELS[provider];
 			persistApiKey = shouldPersistApiKeyForProvider(provider);
-			apiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
+			const storedApiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
+			apiKey = storedApiKey.trim() || getDefaultApiKey(provider);
 		}
 		saveProviderSettings();
+		void refreshModelCatalog();
 	}
 
 	function handleApiKeyInput(event: Event) {
 		const target = event.currentTarget as HTMLInputElement;
 		apiKey = target.value;
 		saveProviderSettings();
+		scheduleModelCatalogRefresh();
 	}
 
 	function handleModelInput(event: Event) {
-		const target = event.currentTarget as HTMLInputElement;
+		const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
 		model = target.value;
 		saveProviderSettings();
 	}
@@ -635,12 +731,6 @@ import { onMount } from 'svelte';
 	}
 
 	function removeDocument(docId: string) {
-		if (payload.docs.length <= 1) {
-			payloadError = 'At least one document must remain in the payload.';
-			status = '';
-			return;
-		}
-
 		const nextDocs = payload.docs.filter((doc) => doc.id !== docId);
 		commitPayload(
 			{
@@ -760,20 +850,6 @@ import { onMount } from 'svelte';
 		}
 	}
 
-	function downloadPayload() {
-		if (typeof window === 'undefined') {
-			return;
-		}
-		const blob = new Blob([payloadToPrettyJson(payload)], { type: 'application/json' });
-		const objectUrl = URL.createObjectURL(blob);
-		const anchor = window.document.createElement('a');
-		anchor.href = objectUrl;
-		anchor.download = 'rag-payload.json';
-		anchor.click();
-		URL.revokeObjectURL(objectUrl);
-		status = 'Payload JSON downloaded';
-	}
-
 	function clearChat() {
 		startNewSession();
 	}
@@ -827,6 +903,16 @@ import { onMount } from 'svelte';
 			}
 			const message = error instanceof Error ? error.message : 'Request failed';
 			payloadError = message;
+			upsertActiveSessionMessages([
+				...nextHistory,
+				{
+					id: nowId(),
+					role: 'assistant',
+					content: message,
+					createdAt: Date.now(),
+					isError: true
+				}
+			]);
 		} finally {
 			loading = false;
 			activeRequestController = null;
@@ -839,6 +925,9 @@ import { onMount } from 'svelte';
 	}
 
 	function handlePromptKeydown(event: KeyboardEvent) {
+		if (event.isComposing || event.key === 'Process' || event.keyCode === 229) {
+			return;
+		}
 		if (event.key === 'Enter' && !event.shiftKey) {
 			event.preventDefault();
 			void submitPrompt();
@@ -962,6 +1051,7 @@ import { onMount } from 'svelte';
 		onToggleTheme={toggleTheme}
 		onSetActiveSession={setActiveSession}
 		onDeleteSession={deleteSession}
+		onRenameSession={renameSession}
 		onCopyShareUrl={copyShareUrl}
 	/>
 
@@ -978,13 +1068,12 @@ import { onMount } from 'svelte';
 		loading={loading}
 		prompt={prompt}
 		mobileContextOpen={mobileContextOpen}
-		starterPrompts={STARTER_PROMPTS}
+		ragDocs={payload.docs}
 		formatMessageTime={formatMessageTime}
 		onToggleLeftRail={toggleMobileLeftRail}
 		onClearChat={clearChat}
 		onToggleContext={toggleMobileContext}
 		onOpenSettings={openSettings}
-		onUseStarterPrompt={useStarterPrompt}
 		onSubmit={sendMessage}
 		onPromptInput={handlePromptInput}
 		onPromptKeydown={handlePromptKeydown}
@@ -1018,12 +1107,11 @@ import { onMount } from 'svelte';
 	provider={provider}
 	theme={theme}
 	model={model}
+	modelOptions={modelOptions}
+	isModelCatalogLoading={isModelCatalogLoading}
+	modelCatalogError={modelCatalogError}
 	apiKey={apiKey}
 	persistApiKey={persistApiKey}
-	shareUrl={shareUrl}
-	encodedLength={encodedLength}
-	urlLength={urlLength}
-	urlRisk={urlRisk}
 	payloadError={payloadError}
 	status={status}
 	bind:titleInput
@@ -1045,9 +1133,10 @@ import { onMount } from 'svelte';
 	onApiKeyInput={handleApiKeyInput}
 	onApiKeySaveToggle={handleApiKeySaveToggle}
 	onModelInput={handleModelInput}
+	onRefreshModels={() => {
+		void refreshModelCatalog();
+	}}
 	onApplyBuilderSettings={applyBuilderSettings}
-	onCopyShareUrl={copyShareUrl}
-	onDownloadPayload={downloadPayload}
 	onAddDocument={addDocument}
 	onRemoveDocument={removeDocument}
 	onFileInput={handleFileInput}

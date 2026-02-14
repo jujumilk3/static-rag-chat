@@ -13,18 +13,18 @@ const DEFAULT_RETRIEVAL = {
 	overlap: 120
 };
 
-const SAMPLE_DOC = `Static RAG chat lets you share context without running a backend.\nUsers only need a URL plus their own API key.\nAll retrieval and generation requests happen directly in the browser.`;
+const SAMPLE_DOC = `Static Rag Chat은 RAG 문서를 URL 해시에 압축해 전달하는 정적 채팅 앱입니다.\n문맥 데이터는 공유 URL에 담겨 이동하고, 각 사용자 브라우저는 본인 API 키만 로컬에 입력해 동일한 세션을 재현할 수 있습니다.\n백엔드를 운영하지 않아도 URL 하나만으로 같은 컨텍스트의 대화를 공유할 수 있다는 점이 핵심입니다.`;
 
 export function createDefaultPayload(): RagPayload {
 	return {
 		v: 1,
-		title: 'Static RAG Chat',
+		title: 'Static Rag Chat',
 		systemPrompt:
 			'You are a helpful assistant. Prefer answers grounded in the provided context. If the context is insufficient, clearly say what is missing.',
 		docs: [
 			{
 				id: 'doc-1',
-				title: 'About this shared RAG',
+				title: 'About Static Rag Chat',
 				content: SAMPLE_DOC
 			}
 		],
@@ -51,10 +51,6 @@ export function normalizePayload(input: unknown): RagPayload {
 	const docs = docsRaw
 		.map((entry, index) => cleanDoc(entry, index))
 		.filter((doc) => doc.content.length > 0);
-
-	if (docs.length === 0) {
-		throw new Error('Payload must include at least one non-empty document in docs[].');
-	}
 
 	const retrievalRaw =
 		typeof raw.retrieval === 'object' && raw.retrieval !== null
@@ -84,7 +80,7 @@ export function normalizePayload(input: unknown): RagPayload {
 
 	return {
 		v: 1,
-		title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Shared RAG Chat',
+		title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Static Rag Chat',
 		systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt.trim() : '',
 		docs,
 		retrieval: {

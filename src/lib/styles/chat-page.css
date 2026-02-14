@@ -608,11 +608,11 @@
 		gap: 0.52rem;
 		max-height: min(300px, 40dvh);
 		overflow: auto;
-		padding-right: 0.82rem;
+		padding-right: 0;
 		padding-top: 0.34rem;
 		padding-bottom: 0.28rem;
 		margin-top: 0.2rem;
-		scrollbar-gutter: stable;
+		scrollbar-gutter: auto;
 	}
 
 	.left-rail .session-list::-webkit-scrollbar {
@@ -630,14 +630,14 @@
 		border-radius: 999px;
 	}
 
-.session-item {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 0.46rem;
-	min-height: var(--control-height);
-	width: 100%;
-	border-radius: calc(var(--radius-sm) + 1px);
+	.session-item {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		align-items: center;
+		gap: 0.46rem;
+		min-height: var(--control-height);
+		width: 100%;
+		border-radius: calc(var(--radius-sm) + 1px);
 	padding: 0.42rem;
 	border: 1px solid color-mix(in srgb, var(--line) 90%, transparent);
 	background: color-mix(in srgb, var(--surface-soft) 86%, transparent);
@@ -674,6 +674,26 @@
 		border-color: color-mix(in srgb, var(--danger) 46%, transparent);
 		background: color-mix(in srgb, var(--danger) 38%, var(--surface-soft));
 		transform: translateY(-1px);
+	}
+
+	.session-actions {
+		display: flex;
+		gap: 0.36rem;
+		align-items: center;
+	}
+
+	.session-edit {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		gap: 0.34rem;
+		align-items: center;
+		width: 100%;
+	}
+
+	.session-title-input {
+		min-height: 30px;
+		height: 30px;
+		border-radius: var(--radius-sm);
 	}
 
 	.session-item:hover {
@@ -1010,6 +1030,23 @@
 		border-color: transparent;
 	}
 
+	.message-row.message-error .message-avatar {
+		background: color-mix(in srgb, var(--error) 84%, #ffffff 16%);
+		color: #ffffff;
+		border-color: color-mix(in srgb, var(--error) 40%, transparent);
+	}
+
+	.message-row.message-error .message-bubble {
+		background: color-mix(in srgb, var(--error) 12%, var(--surface-soft));
+		border-color: color-mix(in srgb, var(--error) 45%, transparent);
+	}
+
+	.message-row.message-error .message-meta strong,
+	.message-row.message-error .message-meta span,
+	.message-row.message-error .message-bubble p {
+		color: color-mix(in srgb, var(--error) 84%, var(--text) 16%);
+	}
+
 	.message-meta {
 		display: flex;
 		justify-content: space-between;
@@ -1320,8 +1357,8 @@
 
 	.settings-drawer.modal {
 		width: min(980px, calc(100vw - 2.4rem));
-		max-height: min(860px, calc(100dvh - 2.4rem));
-		height: min(860px, calc(100dvh - 2.4rem));
+		max-height: min(760px, calc(100dvh - 2.4rem));
+		height: min(760px, calc(100dvh - 2.4rem));
 		transform: translateY(14px) scale(0.98);
 		box-shadow: var(--panel-shadow);
 		border: 1px solid var(--line);
@@ -1371,6 +1408,22 @@
 		display: grid;
 		gap: 0.7rem;
 		background: var(--surface);
+		align-content: start;
+	}
+
+	.settings-alert-stack {
+		display: grid;
+		gap: 0.36rem;
+	}
+
+	.settings-alert-stack .error,
+	.settings-alert-stack .status {
+		display: block;
+		width: 100%;
+		margin: 0;
+		padding: 0.34rem 0.68rem;
+		line-height: 1.2;
+		font-size: 0.9rem;
 	}
 
 	.panel-block {
@@ -1467,6 +1520,29 @@
 		color: var(--input-text);
 		line-height: var(--text-line-height-compact);
 		transition: box-shadow 150ms ease, border-color 150ms ease, background-color 150ms ease;
+	}
+
+	.settings-drawer select {
+		appearance: none;
+		-webkit-appearance: none;
+		-moz-appearance: none;
+		padding-right: 2.35rem;
+		background-image:
+			linear-gradient(
+				45deg,
+				transparent 50%,
+				color-mix(in srgb, var(--muted) 78%, var(--text) 22%) 50%
+			),
+			linear-gradient(
+				135deg,
+				color-mix(in srgb, var(--muted) 78%, var(--text) 22%) 50%,
+				transparent 50%
+			);
+		background-position:
+			calc(100% - 1rem) calc(50% + 1px),
+			calc(100% - 0.72rem) calc(50% + 1px);
+		background-size: 0.34rem 0.34rem, 0.34rem 0.34rem;
+		background-repeat: no-repeat;
 	}
 
 	input:focus,
@@ -1791,8 +1867,8 @@
 		.settings-drawer.modal {
 			width: min(560px, 100vw);
 			max-width: 100%;
-			max-height: min(92vh, 860px);
-			height: min(92vh, 860px);
+			max-height: min(88vh, 760px);
+			height: min(88vh, 760px);
 			transform: translateY(8px) scale(0.98);
 		}
 

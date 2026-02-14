@@ -1,4 +1,4 @@
-# static-rag-chat
+# Static Rag Chat
 
 SvelteKit-based, fully static RAG chat app for GitHub Pages.
 
@@ -30,6 +30,16 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+To avoid entering keys each time, set provider keys in `.env.local`:
+
+```bash
+VITE_OPENAI_API_KEY=
+VITE_ANTHROPIC_API_KEY=
+VITE_GEMINI_API_KEY=
+```
+
+The app loads these values at startup while still keeping your typed keys in `localStorage` when you opt in to saving.
 
 ## Build (GitHub Pages)
 
@@ -65,7 +75,7 @@ You can edit/import payloads with this shape:
 ```json
 {
   "v": 1,
-  "title": "My Shared RAG",
+  "title": "Static Rag Chat",
   "systemPrompt": "Answer using provided context first.",
   "docs": [
     {

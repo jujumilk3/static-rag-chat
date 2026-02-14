@@ -27,6 +27,167 @@ export const PROVIDER_LABELS: Record<ProviderName, string> = {
 	gemini: 'Gemini (Google)'
 };
 
+function asStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((entry) => {
+			if (typeof entry === 'string') {
+				return entry;
+			}
+			if (entry && typeof entry === 'object') {
+				const candidate =
+					(typeof (entry as Record<string, unknown>).id === 'string' && (entry as Record<string, unknown>).id) ??
+					(typeof (entry as Record<string, unknown>).name === 'string' && (entry as Record<string, unknown>).name) ??
+					'';
+				return typeof candidate === 'string' ? candidate : '';
+			}
+			return '';
+		})
+		.filter(Boolean);
+}
+
+function isLikelyChatModel(modelId: string): boolean {
+	const id = modelId.toLowerCase().trim();
+	const baseId = id.startsWith('ft:') ? id.slice(3) : id;
+
+	const blocked = [
+		'instruct',
+		'whisper',
+		'tts',
+		'speech',
+		'audio',
+		'image',
+		'search',
+		'realtime',
+		'transcribe',
+		'transcription',
+		'embedding',
+		'moderation',
+		'text-',
+		'dall-e',
+		'dalle',
+		'sora',
+		'davinci',
+		'babbage',
+		'curie',
+		'ada'
+	];
+	if (blocked.some((disallowed) => baseId.includes(disallowed))) {
+		return false;
+	}
+
+	// Keep only text-chat families for OpenAI.
+	return /^(gpt-(4|5|3\.5|oss)|chatgpt-|o[1-9])/.test(baseId);
+}
+
+function asModelArrayFromGemini(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((entry) => {
+			if (!entry || typeof entry !== 'object') {
+				return '';
+			}
+			const obj = entry as Record<string, unknown>;
+			const name = typeof obj.name === 'string' ? obj.name : '';
+			const methods = Array.isArray(obj.supportedGenerationMethods) ? obj.supportedGenerationMethods : [];
+			const supportsGenerateContent = methods.some(
+				(method) => typeof method === 'string' && method === 'generateContent'
+			);
+			if (!supportsGenerateContent) {
+				return '';
+			}
+			return name.startsWith('models/') ? name.slice('models/'.length) : name;
+		})
+		.filter(Boolean);
+}
+
+function uniqueSorted(values: string[]): string[] {
+	const seen = new Set<string>();
+	const normalized = values
+		.map((value) => value.trim())
+		.filter((value) => value.length > 0)
+		.filter((value) => {
+			const key = value.toLowerCase();
+			if (seen.has(key)) {
+				return false;
+			}
+			seen.add(key);
+			return true;
+		})
+		.sort((a, b) => a.localeCompare(b));
+	return normalized;
+}
+
+const ENV_KEYS: Readonly<Record<ProviderName, string>> = {
+	openai: (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) ?? '',
+	anthropic: (import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined) ?? '',
+	gemini: (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? ''
+};
+
+export function getDefaultApiKey(provider: ProviderName): string {
+	return ENV_KEYS[provider]?.trim() ?? '';
+}
+
+export async function fetchModelCatalog(provider: ProviderName, apiKey: string): Promise<string[]> {
+	if (!apiKey.trim()) {
+		return [];
+	}
+
+	switch (provider) {
+		case 'openai':
+			return getOpenAIModels(apiKey);
+		case 'anthropic':
+			return getAnthropicModels(apiKey);
+		case 'gemini':
+			return getGeminiModels(apiKey);
+		default:
+			return [];
+	}
+}
+
+async function getOpenAIModels(apiKey: string): Promise<string[]> {
+	const response = await fetch('https://api.openai.com/v1/models', {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${apiKey}`
+		}
+	});
+	const data = (await assertOk(response, 'openai')) as Record<string, unknown>;
+	const models = asStringArray(data?.data).filter(isLikelyChatModel);
+	return uniqueSorted(models);
+}
+
+async function getAnthropicModels(apiKey: string): Promise<string[]> {
+	const response = await fetch('https://api.anthropic.com/v1/models', {
+		method: 'GET',
+		headers: {
+			'x-api-key': apiKey,
+			'anthropic-version': '2023-06-01',
+			'anthropic-dangerous-direct-browser-access': 'true'
+		}
+	});
+	const data = (await assertOk(response, 'anthropic')) as Record<string, unknown>;
+	const models = asStringArray(data?.data);
+	return uniqueSorted(models);
+}
+
+async function getGeminiModels(apiKey: string): Promise<string[]> {
+	const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(apiKey)}`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json'
+		}
+	});
+	const data = (await assertOk(response, 'gemini')) as Record<string, unknown>;
+	const models = asModelArrayFromGemini(data?.models);
+	return uniqueSorted(models);
+}
+
 function getErrorMessage(data: unknown): string | null {
 	if (typeof data !== 'object' || data === null) {
 		return null;

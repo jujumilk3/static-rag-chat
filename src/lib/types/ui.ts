@@ -3,6 +3,7 @@ export type UIMessage = {
 	role: 'user' | 'assistant';
 	content: string;
 	createdAt: number;
+	isError?: boolean;
 };
 
 export type ChatSession = {
@@ -14,11 +15,6 @@ export type ChatSession = {
 	payloadDigest: string;
 };
 
-export type StarterPrompt = {
-	label: string;
-	prompt: string;
-};
-
-export type SettingsTab = 'connection' | 'rag' | 'data';
+export type SettingsTab = 'connection' | 'systemPrompt' | 'data';
 export type ThemeMode = 'light' | 'dark';
 export type SettingsPresentation = 'drawer' | 'modal';

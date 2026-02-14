@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { PanelLeftClose, Menu, Send } from 'lucide-svelte';
-	import type { UIMessage, SettingsTab, StarterPrompt } from '$lib/types/ui';
+	import type { UIMessage, SettingsTab } from '$lib/types/ui';
+	import type { RagDoc } from '$lib/rag/types';
 
 	export let isNarrowViewport: boolean;
 	export let mobileLeftRailOpen: boolean;
@@ -14,7 +15,7 @@
 	export let loading = false;
 	export let prompt = '';
 	export let mobileContextOpen = false;
-	export let starterPrompts: StarterPrompt[] = [];
+	export let ragDocs: RagDoc[] = [];
 
 	export let formatMessageTime: (value: number) => string;
 
@@ -22,7 +23,6 @@
 	export let onClearChat: () => void;
 	export let onToggleContext: () => void;
 	export let onOpenSettings: (tab: SettingsTab) => void;
-	export let onUseStarterPrompt: (prompt: string) => void;
 	export let onSubmit: (event: SubmitEvent) => void;
 	export let onPromptInput: (event: Event) => void;
 	export let onPromptKeydown: (event: KeyboardEvent) => void;
@@ -73,28 +73,32 @@
 		</div>
 	{/if}
 
-	<div class="message-stream" aria-live="polite">
+		<div class="message-stream" aria-live="polite">
 		{#if !hasConversation}
 			<section class="empty-state">
-				<h3>Try the shared RAG in one click</h3>
-				<p>Click a starter prompt to autofill the composer.</p>
+				<h3>Loaded documents in Static Rag Chat</h3>
+				<p>These documents are embedded in the current payload and available for retrieval in this session.</p>
 				<div class="starter-grid">
-					{#each starterPrompts as starter}
-						<button type="button" class="starter-card" on:click={() => onUseStarterPrompt(starter.prompt)}>
-							<span>{starter.label}</span>
-							<small>{starter.prompt}</small>
-						</button>
-					{/each}
+					{#if ragDocs.length > 0}
+						{#each ragDocs as doc, index}
+							<article class="starter-card">
+								<span>{index + 1}. {doc.title}</span>
+								<small>{doc.content.slice(0, 240)}{doc.content.length > 240 ? '…' : ''}</small>
+							</article>
+						{/each}
+					{:else}
+						<p>There are currently no documents in this Static Rag Chat payload.</p>
+					{/if}
 				</div>
 			</section>
 		{/if}
 
 		{#each chatMessages as message}
-			<article class="message-row {message.role}">
+			<article class="message-row {message.role} {message.isError ? 'message-error' : ''}">
 				<div class="message-avatar">{message.role === 'user' ? 'ME' : 'AI'}</div>
 				<div class="message-bubble">
 					<div class="message-meta">
-						<strong>{message.role === 'user' ? 'You' : 'Assistant'}</strong>
+						<strong>{message.role === 'user' ? 'You' : (message.isError ? 'System Error' : 'Assistant')}</strong>
 						<span>{formatMessageTime(message.createdAt)}</span>
 					</div>
 					<p>{message.content}</p>
@@ -125,8 +129,9 @@
 			bind:this={bindComposerTextarea}
 			value={prompt}
 			on:input={onPromptInput}
+			on:compositionend={onPromptInput}
 			rows="3"
-			placeholder="Message shared RAG context... (Enter send / Shift+Enter newline)"
+			placeholder="Ask about this shared Static Rag Chat context... (Enter send / Shift+Enter newline)"
 			on:keydown={onPromptKeydown}
 		></textarea>
 		<div class="composer-foot">

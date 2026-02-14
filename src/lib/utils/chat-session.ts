@@ -30,9 +30,6 @@ export function sanitizeSessionTitle(rawTitle: string | undefined, messages: UIM
 	if (!title) {
 		return createChatTitleFromMessages(messages);
 	}
-	if (/\p{Script=Hangul}/u.test(title)) {
-		return createChatTitleFromMessages(messages);
-	}
 	return title;
 }
 

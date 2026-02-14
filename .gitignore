@@ -138,10 +138,11 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# MCP artifacts
-/artifacts/mcp/
-/artifacts
+# Artifact outputs (QA/dev screenshots, transcripts, etc.)
+/.codex-artifacts/
+/artifacts/
+artifacts/**
+
 
 # Build output
 /build/
-/.codex-artifacts/
