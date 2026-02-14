@@ -140,6 +140,7 @@ vite.config.ts.timestamp-*
 
 # MCP artifacts
 /artifacts/mcp/
+/artifacts
 
 # Build output
 /build/

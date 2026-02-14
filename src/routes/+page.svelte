@@ -10,6 +10,19 @@
 		type ProviderName
 	} from '$lib/chat/providers';
 	import {
+		PanelLeftClose,
+		Menu,
+		Plus,
+		Settings as SettingsIcon,
+		Sun,
+		Moon,
+		X,
+		Trash2,
+		Send,
+		Copy,
+		Download
+	} from 'lucide-svelte';
+	import {
 		createDefaultPayload,
 		encodePayload,
 		normalizePayload,
@@ -32,6 +45,15 @@
 		createdAt: number;
 	};
 
+	type ChatSession = {
+		id: string;
+		title: string;
+		messages: UIMessage[];
+		createdAt: number;
+		updatedAt: number;
+		payloadDigest: string;
+	};
+
 	type StarterPrompt = {
 		label: string;
 		prompt: string;
@@ -39,29 +61,35 @@
 
 	type SettingsTab = 'connection' | 'rag' | 'data';
 	type ThemeMode = 'light' | 'dark';
+	type SettingsPresentation = 'drawer' | 'modal';
 
 	const STORAGE_PREFIX = 'static-rag-chat';
 	const PROVIDERS: ProviderName[] = ['openai', 'anthropic', 'gemini'];
 	const PAYLOAD_DRAFT_KEY = `${STORAGE_PREFIX}:payload-draft`;
 	const THEME_KEY = `${STORAGE_PREFIX}:theme`;
+	const LEFT_RAIL_COLLAPSED_KEY = `${STORAGE_PREFIX}:left-rail-collapsed`;
+	const CHAT_SESSIONS_KEY = `${STORAGE_PREFIX}:chat-sessions`;
+	const CHAT_SESSIONS_LIMIT = 24;
 	const RECENT_HISTORY_LIMIT = 12;
 	const MAX_CONTEXT_CHARS = 12000;
+	const COMPACT_MEDIA_QUERY = '(max-width: 1100px)';
+	const NARROW_MEDIA_QUERY = '(max-width: 760px)';
 	const STARTER_PROMPTS: StarterPrompt[] = [
 		{
-			label: '빠른 요약',
-			prompt: '공유된 문서 전체를 6줄 핵심 요약으로 정리해줘.'
+			label: 'Quick Summary',
+			prompt: 'Summarize the shared document in 6 clear key points.'
 		},
 		{
-			label: '의사결정 포인트',
-			prompt: '이 문서 기준으로 의사결정에 필요한 체크리스트를 만들어줘.'
+			label: 'Decision Checklist',
+			prompt: 'Create a checklist of decision items needed for this document.'
 		},
 		{
-			label: '실행 플랜',
-			prompt: '바로 실행 가능한 단계별 액션 플랜으로 변환해줘.'
+			label: 'Execution Plan',
+			prompt: 'Convert this into a practical step-by-step action plan.'
 		},
 		{
-			label: '리스크 탐지',
-			prompt: '문서 안에서 놓치기 쉬운 리스크나 모순점을 찾아줘.'
+			label: 'Risk Detection',
+			prompt: 'Find subtle risks and inconsistencies that are easy to miss.'
 		}
 	];
 
@@ -74,6 +102,8 @@
 	let status = '';
 	let loading = false;
 	let prompt = '';
+	let chatSessions: ChatSession[] = [];
+	let activeSessionId = '';
 	let chatMessages: UIMessage[] = [];
 	let retrievedChunks: RetrievedChunk[] = [];
 	let shareUrl = '';
@@ -85,8 +115,15 @@
 
 	let settingsOpen = false;
 	let settingsTab: SettingsTab = 'connection';
+	let settingsPresentation: SettingsPresentation = 'modal';
 	let showRetrievedContext = false;
 	let theme: ThemeMode = 'light';
+	let leftRailCollapsed = false;
+	let mobileLeftRailOpen = false;
+	let persistApiKey = false;
+	let isCompactViewport = false;
+	let isNarrowViewport = false;
+	let mobileContextOpen = false;
 
 	let titleInput = payload.title;
 	let systemPromptInput = payload.systemPrompt;
@@ -101,6 +138,7 @@
 	let encodedLength = 0;
 	let urlLength = 0;
 	let urlRisk: 'ok' | 'warn' | 'danger' = 'ok';
+	let payloadDigest = '';
 
 	$: ragIndex = createRagIndex(payload);
 	$: hasApiKey = apiKey.trim().length > 0;
@@ -108,6 +146,7 @@
 	$: hasConversation = chatMessages.length > 0;
 	$: docCount = payload.docs.length;
 	$: docChars = payload.docs.reduce((sum, doc) => sum + doc.content.length, 0);
+	$: activeSessionTitle = chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'New Conversation';
 	$: {
 		try {
 			encodedLength = encodePayload(payload).length;
@@ -129,12 +168,126 @@
 		if (typeof document !== 'undefined') {
 			document.documentElement.dataset.theme = theme;
 			document.documentElement.style.colorScheme = theme;
-			document.body.style.overflow = settingsOpen ? 'hidden' : '';
+			document.body.style.overflow =
+				settingsOpen || (isNarrowViewport && (mobileContextOpen || mobileLeftRailOpen)) ? 'hidden' : '';
 		}
+	}
+
+	function storageKeyLeftRailCollapsed() {
+		return LEFT_RAIL_COLLAPSED_KEY;
+	}
+
+	function loadLeftRailPreference() {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		leftRailCollapsed = window.localStorage.getItem(storageKeyLeftRailCollapsed()) === 'true';
+	}
+
+	function saveLeftRailPreference() {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		window.localStorage.setItem(storageKeyLeftRailCollapsed(), String(leftRailCollapsed));
+	}
+
+	function toggleLeftRail() {
+		leftRailCollapsed = !leftRailCollapsed;
+		saveLeftRailPreference();
 	}
 
 	function nowId(): string {
 		return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+	}
+
+	function buildPayloadDigest(nextPayload: RagPayload): string {
+		const normalized = normalizePayload(nextPayload);
+		const json = JSON.stringify(normalized);
+		let hash = 2166136261;
+		for (let i = 0; i < json.length; i++) {
+			hash ^= json.charCodeAt(i);
+			hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+		}
+		return (hash >>> 0).toString(16).padStart(8, '0');
+	}
+
+	function chatStorageKey(forDigest: string): string {
+		return `${CHAT_SESSIONS_KEY}:${forDigest}`;
+	}
+
+	function isUiMessage(value: unknown): value is UIMessage {
+		if (typeof value !== 'object' || value === null) {
+			return false;
+		}
+		const candidate = value as Partial<UIMessage>;
+		return (
+			typeof candidate.id === 'string' &&
+			(candidate.role === 'user' || candidate.role === 'assistant') &&
+			typeof candidate.content === 'string' &&
+			typeof candidate.createdAt === 'number'
+		);
+	}
+
+	function createChatTitleFromMessages(messages: UIMessage[]): string {
+		const firstUser = messages.find((message) => message.role === 'user');
+		if (!firstUser) {
+			return 'New Conversation';
+		}
+		const raw = firstUser.content.replace(/\s+/g, ' ').trim();
+		if (!raw) {
+			return 'New Conversation';
+		}
+		const short = raw.length > 40 ? `${raw.slice(0, 40)}...` : raw;
+		return short;
+	}
+
+	function sanitizeSessionTitle(rawTitle: string | undefined, messages: UIMessage[]): string {
+		const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
+		if (!title) {
+			return createChatTitleFromMessages(messages);
+		}
+		if (/\p{Script=Hangul}/u.test(title)) {
+			return createChatTitleFromMessages(messages);
+		}
+		return title;
+	}
+
+	function createSession(forDigest: string): ChatSession {
+		const now = Date.now();
+		return {
+			id: nowId(),
+			title: 'New Conversation',
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			payloadDigest: forDigest
+		};
+	}
+
+	function normalizeSession(raw: unknown, forDigest: string): ChatSession | null {
+		if (typeof raw !== 'object' || raw === null) {
+			return null;
+		}
+		const candidate = raw as Partial<ChatSession>;
+		if (typeof candidate.id !== 'string' || !candidate.id.trim()) {
+			return null;
+		}
+
+		const rawMessages = Array.isArray(candidate.messages) ? candidate.messages : [];
+		const messages = rawMessages.filter(isUiMessage);
+		const createdAt = Number(candidate.createdAt) || Date.now();
+		const updatedAt = Number(candidate.updatedAt) || createdAt;
+		const title =
+			sanitizeSessionTitle(typeof candidate.title === 'string' ? candidate.title : '', messages);
+
+		return {
+			id: candidate.id,
+			title,
+			messages,
+			createdAt,
+			updatedAt,
+			payloadDigest: typeof candidate.payloadDigest === 'string' ? candidate.payloadDigest : forDigest
+		};
 	}
 
 	function systemTheme(): ThemeMode {
@@ -199,16 +352,43 @@
 		shouldAutoScroll = remaining < 80;
 	}
 
-	function openSettings(tab: SettingsTab = 'connection') {
+	function getDefaultSettingsPresentation(): SettingsPresentation {
+		return isNarrowViewport || isCompactViewport ? 'drawer' : 'modal';
+	}
+
+	function openSettings(tab: SettingsTab = 'connection', presentation?: SettingsPresentation) {
 		settingsTab = tab;
+		settingsPresentation = presentation ?? getDefaultSettingsPresentation();
 		settingsOpen = true;
+		mobileContextOpen = false;
+		mobileLeftRailOpen = false;
 	}
 
 	function closeSettings() {
 		settingsOpen = false;
 	}
 
-	function handleModalBackdropClick(event: MouseEvent) {
+	function toggleMobileContext() {
+		if (!mobileContextOpen) {
+			closeMobileLeftRail();
+		}
+		mobileContextOpen = !mobileContextOpen;
+	}
+
+	function toggleMobileLeftRail() {
+		mobileLeftRailOpen = !mobileLeftRailOpen;
+	}
+
+	function closeMobileLeftRail() {
+		mobileLeftRailOpen = false;
+	}
+
+	function startNewSessionFromRail() {
+		clearChat();
+		closeMobileLeftRail();
+	}
+
+	function handleSettingsDrawerBackdropClick(event: MouseEvent) {
 		if (event.target === event.currentTarget) {
 			closeSettings();
 		}
@@ -222,8 +402,23 @@
 		return `${STORAGE_PREFIX}:model:${providerName}`;
 	}
 
+	function storageKeyForApiSavePreference(providerName: ProviderName): string {
+		return `${STORAGE_PREFIX}:api-save:${providerName}`;
+	}
+
 	function storageKeyProvider(): string {
 		return `${STORAGE_PREFIX}:provider`;
+	}
+
+	function shouldPersistApiKeyForProvider(providerName: ProviderName): boolean {
+		if (typeof window === 'undefined') {
+			return false;
+		}
+		const explicit = window.localStorage.getItem(storageKeyForApiSavePreference(providerName));
+		if (explicit === 'true' || explicit === 'false') {
+			return explicit === 'true';
+		}
+		return Boolean(window.localStorage.getItem(storageKeyForApi(providerName)));
 	}
 
 	function syncBuilderInputsFromPayload() {
@@ -243,9 +438,10 @@
 		if (preferredProvider === 'openai' || preferredProvider === 'anthropic' || preferredProvider === 'gemini') {
 			provider = preferredProvider;
 		}
+		persistApiKey = shouldPersistApiKeyForProvider(provider);
 
 		model = window.localStorage.getItem(storageKeyForModel(provider)) ?? DEFAULT_MODELS[provider];
-		apiKey = window.localStorage.getItem(storageKeyForApi(provider)) ?? '';
+		apiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
 	}
 
 	function saveProviderSettings() {
@@ -254,7 +450,164 @@
 		}
 		window.localStorage.setItem(storageKeyProvider(), provider);
 		window.localStorage.setItem(storageKeyForModel(provider), model);
-		window.localStorage.setItem(storageKeyForApi(provider), apiKey);
+		window.localStorage.setItem(storageKeyForApiSavePreference(provider), String(persistApiKey));
+		if (persistApiKey) {
+			window.localStorage.setItem(storageKeyForApi(provider), apiKey);
+		} else {
+			window.localStorage.removeItem(storageKeyForApi(provider));
+		}
+	}
+
+	function handleApiKeySaveToggle(event: Event) {
+		const target = event.currentTarget as HTMLInputElement;
+		const next = target.checked;
+		if (next && typeof window !== 'undefined') {
+			const currentStored = window.localStorage.getItem(storageKeyForApi(provider));
+			if (currentStored) {
+				window.alert('An API key already exists in localStorage for this browser. Enabling this will overwrite it with your current input.');
+				if (!apiKey.trim()) {
+					apiKey = currentStored;
+				}
+			}
+		}
+		persistApiKey = next;
+		saveProviderSettings();
+	}
+
+	function setActiveSession(sessionId: string, options: { focusComposer?: boolean } = {}) {
+		const session = chatSessions.find((item) => item.id === sessionId);
+		if (!session) {
+			return;
+		}
+		activeSessionId = session.id;
+		chatMessages = [...session.messages];
+		retrievedChunks = [];
+		showRetrievedContext = false;
+		prompt = '';
+		shouldAutoScroll = true;
+		closeMobileLeftRail();
+		if (options.focusComposer) {
+			focusComposer();
+		}
+	}
+
+	function upsertActiveSessionMessages(nextMessages: UIMessage[]) {
+		const index = chatSessions.findIndex((session) => session.id === activeSessionId);
+		if (index === -1) {
+			return;
+		}
+		const derivedTitle = createChatTitleFromMessages(nextMessages);
+		chatSessions[index] = {
+			...chatSessions[index],
+			messages: nextMessages,
+			title: chatSessions[index].title === 'New Conversation' ? derivedTitle : chatSessions[index].title,
+			updatedAt: Date.now()
+		};
+		chatMessages = nextMessages;
+		chatSessions = [...chatSessions.sort((a, b) => b.updatedAt - a.updatedAt)];
+		saveChatSessions();
+	}
+
+	function ensureSessionForCurrentPayload() {
+		const nextDigest = buildPayloadDigest(payload);
+		if (!nextDigest) {
+			return;
+		}
+		if (nextDigest !== payloadDigest) {
+			payloadDigest = nextDigest;
+			loadChatSessions();
+		}
+		if (!activeSessionId || !chatSessions.some((session) => session.id === activeSessionId)) {
+			startNewSession();
+		}
+	}
+
+	function saveChatSessions() {
+		if (typeof window === 'undefined' || !payloadDigest) {
+			return;
+		}
+		const trimmed = chatSessions
+			.map((session) => ({
+				...session,
+				messages: session.messages.slice(-120)
+			}))
+			.slice(0, CHAT_SESSIONS_LIMIT);
+		window.localStorage.setItem(chatStorageKey(payloadDigest), JSON.stringify(trimmed));
+	}
+
+	function loadChatSessions() {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		if (!payloadDigest) {
+			payloadDigest = buildPayloadDigest(payload);
+		}
+		const raw = window.localStorage.getItem(chatStorageKey(payloadDigest));
+		if (!raw) {
+			chatSessions = [];
+			startNewSession();
+			return;
+		}
+
+		try {
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				throw new Error('Invalid session list');
+			}
+			const normalized = parsed
+				.map((entry) => normalizeSession(entry, payloadDigest))
+				.filter((entry): entry is ChatSession => entry !== null)
+				.sort((a, b) => b.updatedAt - a.updatedAt)
+				.slice(0, CHAT_SESSIONS_LIMIT);
+
+			chatSessions = normalized;
+			const active = chatSessions[0];
+			if (active) {
+				setActiveSession(active.id);
+			} else {
+				startNewSession();
+			}
+		} catch {
+			window.localStorage.removeItem(chatStorageKey(payloadDigest));
+			chatSessions = [];
+			startNewSession();
+		}
+	}
+
+	function startNewSession() {
+		if (!payloadDigest) {
+			payloadDigest = buildPayloadDigest(payload);
+		}
+		const session = createSession(payloadDigest);
+		chatSessions = [session, ...chatSessions].slice(0, CHAT_SESSIONS_LIMIT);
+		activeSessionId = session.id;
+		chatMessages = [];
+		retrievedChunks = [];
+		showRetrievedContext = false;
+		status = 'Started new chat';
+		prompt = '';
+		shouldAutoScroll = true;
+		focusComposer();
+		saveChatSessions();
+	}
+
+	function deleteSession(event: MouseEvent, sessionId: string) {
+		event.preventDefault();
+		event.stopPropagation();
+		if (!window.confirm('Delete this conversation?')) {
+			return;
+		}
+		chatSessions = chatSessions.filter((session) => session.id !== sessionId);
+		if (activeSessionId === sessionId) {
+			startNewSession();
+			return;
+		}
+		if (!chatSessions.length) {
+			startNewSession();
+			return;
+		}
+		saveChatSessions();
+		status = 'Chat deleted';
 	}
 
 	function savePayloadDraft() {
@@ -319,6 +672,7 @@
 		payloadError = '';
 		syncBuilderInputsFromPayload();
 		savePayloadDraft();
+		ensureSessionForCurrentPayload();
 
 		if (options.statusMessage) {
 			status = options.statusMessage;
@@ -365,7 +719,8 @@
 		provider = next;
 		if (typeof window !== 'undefined') {
 			model = window.localStorage.getItem(storageKeyForModel(provider)) ?? DEFAULT_MODELS[provider];
-			apiKey = window.localStorage.getItem(storageKeyForApi(provider)) ?? '';
+			persistApiKey = shouldPersistApiKeyForProvider(provider);
+			apiKey = persistApiKey ? window.localStorage.getItem(storageKeyForApi(provider)) ?? '' : '';
 		}
 		saveProviderSettings();
 	}
@@ -587,12 +942,7 @@
 	}
 
 	function clearChat() {
-		chatMessages = [];
-		retrievedChunks = [];
-		prompt = '';
-		status = 'Chat cleared';
-		shouldAutoScroll = true;
-		focusComposer();
+		startNewSession();
 	}
 
 	function toChatMessages(history: UIMessage[], context: string): ChatMessage[] {
@@ -625,6 +975,10 @@
 		if (!canSend) {
 			return;
 		}
+		ensureSessionForCurrentPayload();
+		if (!activeSessionId) {
+			startNewSession();
+		}
 
 		payloadError = '';
 		status = '';
@@ -638,7 +992,7 @@
 			createdAt: Date.now()
 		};
 		const nextHistory = [...chatMessages, userMessage];
-		chatMessages = nextHistory;
+		upsertActiveSessionMessages(nextHistory);
 
 		retrievedChunks = retrieveTopChunks(ragIndex, content, payload.retrieval.topK);
 		showRetrievedContext = retrievedChunks.length > 0;
@@ -657,7 +1011,7 @@
 				signal: controller.signal
 			});
 
-			chatMessages = [...nextHistory, { id: nowId(), role: 'assistant', content: answer, createdAt: Date.now() }];
+			upsertActiveSessionMessages([...nextHistory, { id: nowId(), role: 'assistant', content: answer, createdAt: Date.now() }]);
 			status = `Response generated with ${PROVIDER_LABELS[provider]}`;
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') {
@@ -684,6 +1038,25 @@
 		}
 	}
 
+	function setViewportState() {
+		if (typeof window === 'undefined') {
+			isCompactViewport = false;
+			isNarrowViewport = false;
+			mobileContextOpen = false;
+			mobileLeftRailOpen = false;
+			return;
+		}
+		isCompactViewport = window.matchMedia(COMPACT_MEDIA_QUERY).matches;
+		isNarrowViewport = window.matchMedia(NARROW_MEDIA_QUERY).matches;
+		if (!isNarrowViewport) {
+			mobileContextOpen = false;
+			mobileLeftRailOpen = false;
+		}
+		if (settingsOpen) {
+			settingsPresentation = getDefaultSettingsPresentation();
+		}
+	}
+
 	function cancelGeneration() {
 		if (activeRequestController) {
 			activeRequestController.abort();
@@ -695,8 +1068,10 @@
 	});
 
 	onMount(() => {
+		setViewportState();
 		loadTheme();
 		loadLocalSettings();
+		loadLeftRailPreference();
 		const loadedFromHash = loadPayloadFromHash();
 		if (!loadedFromHash) {
 			const canLoadDraft = window.location.hash.length === 0;
@@ -705,22 +1080,39 @@
 				syncHashWithPayload();
 			}
 		}
+		ensureSessionForCurrentPayload();
 
 		const onHashChange = () => {
 			loadPayloadFromHash();
+			ensureSessionForCurrentPayload();
 		};
 
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === 'Escape' && settingsOpen) {
+			if (event.key === 'Escape') {
+				if (mobileContextOpen) {
+					mobileContextOpen = false;
+					return;
+				}
+				if (mobileLeftRailOpen) {
+					mobileLeftRailOpen = false;
+					return;
+				}
 				closeSettings();
-			}
+				 }
 		};
+		const compactMedia = window.matchMedia(COMPACT_MEDIA_QUERY);
+		const narrowMedia = window.matchMedia(NARROW_MEDIA_QUERY);
+		const onViewportResize = () => setViewportState();
 
+		compactMedia.addEventListener('change', onViewportResize);
+		narrowMedia.addEventListener('change', onViewportResize);
 		window.addEventListener('hashchange', onHashChange);
 		window.addEventListener('keydown', onKeyDown);
 		focusComposer();
 		scrollMessagesToBottom(true);
 		return () => {
+			compactMedia.removeEventListener('change', onViewportResize);
+			narrowMedia.removeEventListener('change', onViewportResize);
 			window.removeEventListener('hashchange', onHashChange);
 			window.removeEventListener('keydown', onKeyDown);
 			if (typeof document !== 'undefined') {
@@ -744,72 +1136,173 @@
 	/>
 </svelte:head>
 
-<main class="app-shell">
-	<aside class="left-rail">
-		<div class="brand">
-			<p class="kicker">Static URL RAG</p>
-			<h1>RAG Chat Studio</h1>
-			<p class="rail-note">공유된 URL 컨텍스트 + 사용자 API 키로 누구나 같은 RAG 채팅을 실행합니다.</p>
+<main class="app-shell" class:rail-collapsed={leftRailCollapsed}>
+	{#if isNarrowViewport && mobileLeftRailOpen}
+		<button
+			type="button"
+			class="left-rail-backdrop"
+			on:click={closeMobileLeftRail}
+			aria-label="Close side menu"
+		></button>
+	{/if}
+
+	<aside class="left-rail" class:collapsed={leftRailCollapsed} class:mobile-open={mobileLeftRailOpen && isNarrowViewport}>
+		<button
+			type="button"
+			class="icon-btn rail-toggle"
+			on:click={() => {
+				if (isNarrowViewport) {
+					closeMobileLeftRail();
+				} else {
+					toggleLeftRail();
+				}
+			}}
+			aria-label={isNarrowViewport ? 'Close side menu' : leftRailCollapsed ? 'Open side menu' : 'Close side menu'}
+		>
+			{#if isNarrowViewport}
+				<PanelLeftClose size={18} />
+			{:else if leftRailCollapsed}
+				<Menu size={18} />
+			{:else}
+				<PanelLeftClose size={18} />
+			{/if}
+		</button>
+		<div class="rail-content">
+			<div class="brand">
+				<p class="kicker">Static URL RAG</p>
+				<h1 class="rail-label">RAG Chat Studio</h1>
+				<p class="rail-note">Share the same URL context + API key so anyone can run identical RAG chat sessions.</p>
+			</div>
+
+			<div class="rail-actions">
+				<button type="button" on:click={startNewSessionFromRail}>
+					<span class="rail-icon" aria-hidden="true"><Plus size={16} /></span>
+					<span class="rail-label">New Chat</span>
+				</button>
+				<button type="button" class="ghost" on:click={() => openSettings('connection')}>
+					<span class="rail-icon" aria-hidden="true"><SettingsIcon size={16} /></span>
+					<span class="rail-label">Settings</span>
+				</button>
+				<button type="button" class="ghost" on:click={toggleTheme}>
+					<span class="rail-icon" aria-hidden="true">
+						{#if theme === 'dark'}
+							<Sun size={16} />
+						{:else}
+							<Moon size={16} />
+						{/if}
+					</span>
+					<span class="rail-label">{theme === 'dark' ? 'Switch Light' : 'Switch Dark'}</span>
+				</button>
+			</div>
+
+			<section class="rail-card primary">
+				<h2>{payload.title}</h2>
+				<p>{docCount} docs · {docChars.toLocaleString()} chars</p>
+				<div class="chip-row">
+					<span>{PROVIDER_LABELS[provider]}</span>
+					<span>{model}</span>
+				</div>
+			</section>
+
+			<section class="rail-card">
+				<div class="card-head">
+					<h3>Chat List</h3>
+					<span class="pill">{chatSessions.length}</span>
+				</div>
+				{#if chatSessions.length === 0}
+					<p class="rail-note">No conversation yet. Start a new chat.</p>
+				{:else}
+					<div class="session-list">
+						{#each chatSessions as session (session.id)}
+							<div class="session-item">
+								<button
+									type="button"
+									class="session-btn {activeSessionId === session.id ? 'active' : ''}"
+									on:click={() => setActiveSession(session.id, { focusComposer: true })}
+								>
+									<span class="session-title">{session.title}</span>
+									<span class="session-meta">
+										{session.messages.length} msgs · {formatMessageTime(session.updatedAt)}
+									</span>
+								</button>
+								<button
+									type="button"
+									class="icon-btn mini-btn danger"
+									on:click={(event) => deleteSession(event, session.id)}
+									aria-label="Delete chat"
+								>
+									<Trash2 size={14} />
+								</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</section>
+
+			<section class="rail-card">
+				<div class="card-head">
+					<h3>Share Bundle</h3>
+					<span class="pill {urlRisk}">{urlRisk === 'ok' ? 'Stable' : urlRisk === 'warn' ? 'Long' : 'Risky'}</span>
+				</div>
+				<p class="rail-note">Pack the RAG payload into the URL hash to share and deploy directly.</p>
+				<div class="rail-inline-actions">
+					<button type="button" class="ghost" on:click={copyShareUrl}>Copy URL</button>
+					<button type="button" class="ghost" on:click={() => openSettings('data')}>Data</button>
+				</div>
+				<p class="rail-meta">URL length {urlLength.toLocaleString()} / payload {encodedLength.toLocaleString()}</p>
+			</section>
+
+			<section class="rail-card">
+				<h3>Quick Jump</h3>
+				<div class="rail-inline-actions">
+					<button type="button" class="ghost" on:click={() => openSettings('rag')}>RAG Setup</button>
+					<button type="button" class="ghost" on:click={() => openSettings('connection')}>Provider</button>
+				</div>
+			</section>
 		</div>
-
-		<div class="rail-actions">
-			<button type="button" on:click={clearChat}>New Chat</button>
-			<button type="button" class="ghost" on:click={() => openSettings('connection')}>Settings</button>
-			<button type="button" class="ghost" on:click={toggleTheme}>
-				{theme === 'dark' ? 'Switch Light' : 'Switch Dark'}
-			</button>
-		</div>
-
-		<section class="rail-card primary">
-			<h2>{payload.title}</h2>
-			<p>{docCount} docs · {docChars.toLocaleString()} chars</p>
-			<div class="chip-row">
-				<span>{PROVIDER_LABELS[provider]}</span>
-				<span>{model}</span>
-			</div>
-		</section>
-
-		<section class="rail-card">
-			<div class="card-head">
-				<h3>Share Bundle</h3>
-				<span class="pill {urlRisk}">{urlRisk === 'ok' ? 'Stable' : urlRisk === 'warn' ? 'Long' : 'Risky'}</span>
-			</div>
-			<p class="rail-note">URL hash에 RAG payload를 담아 그대로 배포/공유할 수 있습니다.</p>
-			<div class="rail-inline-actions">
-				<button type="button" class="ghost" on:click={copyShareUrl}>Copy URL</button>
-				<button type="button" class="ghost" on:click={() => openSettings('data')}>Data</button>
-			</div>
-			<p class="rail-meta">URL length {urlLength.toLocaleString()} / payload {encodedLength.toLocaleString()}</p>
-		</section>
-
-		<section class="rail-card">
-			<h3>Quick Jump</h3>
-			<div class="rail-inline-actions">
-				<button type="button" class="ghost" on:click={() => openSettings('rag')}>RAG Setup</button>
-				<button type="button" class="ghost" on:click={() => openSettings('connection')}>Provider</button>
-			</div>
-		</section>
 	</aside>
 
 	<section class="chat-column">
 		<header class="chat-header">
+			{#if isNarrowViewport}
+				<button
+					type="button"
+					class="icon-btn mobile-menu-btn"
+					on:click={toggleMobileLeftRail}
+					aria-label="Toggle side menu"
+				>
+					{#if mobileLeftRailOpen}
+						<PanelLeftClose size={18} />
+					{:else}
+						<Menu size={18} />
+					{/if}
+				</button>
+			{/if}
+
 			<div class="chat-title">
 				<p class="kicker">Conversation</p>
-				<h2>{payload.title}</h2>
+				<h2>{activeSessionTitle}</h2>
 				<p class="chat-subtitle">
-					{hasApiKey ? 'API key loaded' : 'API key required'} · {hasConversation ? `${chatMessages.length} messages` : 'empty conversation'}
+					{payload.title} · {hasApiKey ? 'API key loaded' : 'API key required'} · {hasConversation ? `${chatMessages.length} messages` : 'empty conversation'}
 				</p>
 			</div>
-			<div class="header-actions">
-				<button type="button" class="ghost" on:click={() => openSettings('connection')}>Settings</button>
-				<button type="button" class="ghost" on:click={() => openSettings('rag')}>RAG</button>
-				<button type="button" class="ghost" on:click={() => openSettings('rag')}>Share</button>
+			<div class="chat-toolbar">
+				<span class="chat-pill {hasApiKey ? 'chat-pill-ok' : 'chat-pill-warn'}">
+					{hasApiKey ? 'API Connected' : 'API Missing'}
+				</span>
+				<span class="chat-pill">{PROVIDER_LABELS[provider]}</span>
+				{#if isNarrowViewport}
+					<button type="button" class="chat-pill ghost mobile-pill-btn" on:click={clearChat}>New</button>
+					<button type="button" class="chat-pill ghost mobile-pill-btn" on:click={toggleMobileContext}>
+						{mobileContextOpen ? 'Close Context' : 'Context'}
+					</button>
+				{/if}
 			</div>
 		</header>
 
 		{#if !hasApiKey}
 			<div class="notice warning">
-				<span>API key를 입력해야 메시지를 보낼 수 있습니다.</span>
+				<span>You must enter an API key before sending messages.</span>
 				<button type="button" on:click={() => openSettings('connection')}>Open Settings</button>
 			</div>
 		{/if}
@@ -817,8 +1310,8 @@
 		<div class="message-stream" bind:this={messageViewport} on:scroll={handleMessagesScroll} aria-live="polite">
 			{#if !hasConversation}
 				<section class="empty-state">
-					<h3>공유된 RAG를 바로 테스트해보세요</h3>
-					<p>아래 스타터 프롬프트를 누르면 입력창에 자동으로 들어갑니다.</p>
+					<h3>Try the shared RAG in one click</h3>
+					<p>Click a starter prompt to autofill the composer.</p>
 					<div class="starter-grid">
 						{#each STARTER_PROMPTS as starter}
 							<button type="button" class="starter-card" on:click={() => useStarterPrompt(starter.prompt)}>
@@ -870,18 +1363,40 @@
 				on:keydown={handlePromptKeydown}
 			></textarea>
 			<div class="composer-foot">
-				<p>Context-aware reply · 최근 멀티턴 대화와 검색 청크를 함께 사용합니다.</p>
+				<p>Context-aware responses combine multi-turn history with retrieved chunks.</p>
 				<div class="composer-actions">
 					{#if loading}
 						<button type="button" class="danger" on:click={cancelGeneration}>Stop</button>
 					{/if}
-					<button type="submit" disabled={!canSend}>{loading ? 'Sending...' : 'Send Message'}</button>
+					<button type="submit" class="send-btn" disabled={!canSend}>
+						<span>{loading ? 'Sending...' : 'Send Message'}</span>
+						<Send size={16} />
+					</button>
 				</div>
 			</div>
 		</form>
 	</section>
 
-	<aside class="context-column">
+	{#if isNarrowViewport && mobileContextOpen}
+		<button
+			type="button"
+			class="context-sheet-backdrop"
+			on:click={() => {
+				mobileContextOpen = false;
+			}}
+			aria-label="Close context"
+		></button>
+	{/if}
+
+	<aside class="context-column" class:mobile-open={mobileContextOpen && isNarrowViewport}>
+		{#if isNarrowViewport}
+			<div class="mobile-context-head">
+				<h3>Session Context</h3>
+				<button type="button" class="icon-btn" on:click={() => (mobileContextOpen = false)} aria-label="Close context sheet">
+					<X size={16} />
+				</button>
+			</div>
+		{/if}
 		<section class="context-card">
 			<h3>Session</h3>
 			<p>Provider: <strong>{PROVIDER_LABELS[provider]}</strong></p>
@@ -906,7 +1421,7 @@
 				{/if}
 			</div>
 			{#if retrievedChunks.length === 0}
-				<p class="panel-empty">메시지를 보내면 관련 문서 청크가 여기에 표시됩니다.</p>
+				<p class="panel-empty">Send a message to show matched document chunks here.</p>
 			{:else}
 				<p class="panel-meta">{retrievedChunks.length} chunk(s) selected</p>
 				{#if showRetrievedContext}
@@ -938,172 +1453,212 @@
 	</aside>
 </main>
 
-{#if settingsOpen}
-	<div class="modal-backdrop" role="presentation" on:click={handleModalBackdropClick}>
-		<div class="settings-modal" role="dialog" aria-modal="true" aria-label="RAG settings modal">
-			<header class="modal-head">
+<div
+	class="settings-drawer-backdrop"
+	class:open={settingsOpen}
+	class:modal={settingsPresentation === 'modal'}
+	role="presentation"
+	on:click={handleSettingsDrawerBackdropClick}
+>
+	<div
+		class="settings-drawer"
+		class:open={settingsOpen}
+		class:modal={settingsPresentation === 'modal'}
+		class:drawer={settingsPresentation === 'drawer'}
+		role="dialog"
+		aria-modal="true"
+		aria-label="RAG settings"
+	>
+		<header class="drawer-head">
+			<div>
+				<p class="kicker">Configuration</p>
 				<h2>Settings</h2>
-				<button type="button" class="icon-btn" on:click={closeSettings}>Close</button>
-			</header>
-
-			<nav class="tab-row" aria-label="settings tabs">
-				<button type="button" class:selected={settingsTab === 'connection'} on:click={() => (settingsTab = 'connection')}
-					>Connection</button
-				>
-				<button type="button" class:selected={settingsTab === 'rag'} on:click={() => (settingsTab = 'rag')}>RAG</button>
-				<button type="button" class:selected={settingsTab === 'data'} on:click={() => (settingsTab = 'data')}>Data</button>
-			</nav>
-
-			<div class="tab-panel">
-				{#if settingsTab === 'connection'}
-					<div class="panel-block">
-						<h3>Provider & Model</h3>
-						<div class="theme-row">
-							<span class="theme-label">Theme</span>
-							<div class="theme-options">
-								<button
-									type="button"
-									class="ghost theme-option"
-									class:selected-theme={theme === 'light'}
-									on:click={() => setTheme('light')}
-								>
-									Light
-								</button>
-								<button
-									type="button"
-									class="ghost theme-option"
-									class:selected-theme={theme === 'dark'}
-									on:click={() => setTheme('dark')}
-								>
-									Dark
-								</button>
-							</div>
-						</div>
-						<label>
-							Provider
-							<select value={provider} on:change={handleProviderChange}>
-								{#each PROVIDERS as providerOption}
-									<option value={providerOption}>{PROVIDER_LABELS[providerOption]}</option>
-								{/each}
-							</select>
-						</label>
-						<label>
-							API key (saved in localStorage)
-							<input
-								type="password"
-								value={apiKey}
-								on:input={handleApiKeyInput}
-								placeholder="Paste your API key"
-							/>
-						</label>
-						<label>
-							Model
-							<input type="text" value={model} on:input={handleModelInput} />
-						</label>
-					</div>
-				{:else if settingsTab === 'rag'}
-					<div class="panel-block">
-						<h3>RAG Configuration</h3>
-						<label>
-							Chat title
-							<input type="text" bind:value={titleInput} />
-						</label>
-						<label>
-							System prompt
-							<textarea rows="4" bind:value={systemPromptInput}></textarea>
-						</label>
-						<div class="retrieval-grid">
-							<label>
-								Top K
-								<input type="number" min="1" max="12" bind:value={topKInput} />
-							</label>
-							<label>
-								Chunk size
-								<input type="number" min="200" max="4000" step="50" bind:value={chunkSizeInput} />
-							</label>
-							<label>
-								Overlap
-								<input type="number" min="0" max="2000" step="10" bind:value={overlapInput} />
-							</label>
-						</div>
-						<div class="actions">
-							<button type="button" on:click={applyBuilderSettings}>Apply Settings</button>
-						</div>
-					</div>
-
-					<div class="panel-block">
-						<h3>Share URL</h3>
-						<label>
-							Share URL
-							<input type="text" readonly value={shareUrl} />
-						</label>
-						<p class="help {urlRisk}">
-							Encoded payload: {encodedLength.toLocaleString()} chars | URL: {urlLength.toLocaleString()} chars
-						</p>
-						{#if urlRisk === 'warn'}
-							<p class="warn">Warning: link is getting long and may fail in some apps.</p>
-						{:else if urlRisk === 'danger'}
-							<p class="error">High risk: URL is too long for some browsers/messengers.</p>
-						{/if}
-						<div class="actions">
-							<button type="button" on:click={copyShareUrl}>Copy URL</button>
-							<button type="button" class="ghost" on:click={downloadPayload}>Download JSON</button>
-						</div>
-					</div>
-				{:else}
-					<div class="panel-block">
-						<h3>Documents</h3>
-						<p class="help">{docCount} doc(s), {docChars.toLocaleString()} characters</p>
-						<div class="doc-list">
-							{#each payload.docs as doc, index}
-								<article>
-									<div class="doc-head">
-										<strong>{index + 1}. {doc.title}</strong>
-										<button type="button" class="danger" on:click={() => removeDocument(doc.id)}>Remove</button>
-									</div>
-									<p>{doc.content.slice(0, 220)}{doc.content.length > 220 ? '...' : ''}</p>
-								</article>
-							{/each}
-						</div>
-
-						<label>
-							New document title (optional)
-							<input type="text" bind:value={newDocTitle} placeholder="Example: Product FAQ" />
-						</label>
-						<label>
-							New document content
-							<textarea rows="5" bind:value={newDocContent} placeholder="Paste source text here"></textarea>
-						</label>
-						<div class="actions">
-							<button type="button" on:click={addDocument}>Add Document</button>
-						</div>
-
-						<label>
-							Import files (.txt, .md, .json)
-							<input type="file" multiple accept=".txt,.md,.json" on:change={handleFileInput} />
-						</label>
-						<label>
-							Import from shared URL/hash
-							<input type="text" bind:value={importUrl} placeholder="https://.../#r=... or #r=..." />
-						</label>
-						<div class="actions">
-							<button type="button" class="ghost" on:click={applyImportUrl}>Import URL Payload</button>
-						</div>
-					</div>
-
-					<div class="panel-block">
-						<h3>Advanced JSON</h3>
-						<textarea bind:value={payloadJson} rows="12" spellcheck="false"></textarea>
-						<div class="actions">
-							<button type="button" on:click={applyPayloadJson}>Apply JSON</button>
-							<button type="button" class="ghost" on:click={resetPayload}>Reset Sample</button>
-						</div>
-					</div>
-				{/if}
 			</div>
+			<button type="button" class="icon-btn" on:click={closeSettings} aria-label="Close settings">
+				<X size={18} />
+			</button>
+		</header>
+
+		<nav class="tab-row" aria-label="settings tabs">
+			<button
+				type="button"
+				class:selected={settingsTab === 'connection'}
+				on:click={() => (settingsTab = 'connection')}
+				>Connection</button
+			>
+			<button type="button" class:selected={settingsTab === 'rag'} on:click={() => (settingsTab = 'rag')}>RAG</button>
+			<button type="button" class:selected={settingsTab === 'data'} on:click={() => (settingsTab = 'data')}>Data</button>
+		</nav>
+
+		<div class="tab-panel">
+			{#if settingsTab === 'connection'}
+				<div class="panel-block">
+					<h3>Provider & Model</h3>
+					<div class="theme-row">
+						<span class="theme-label">Theme</span>
+						<div class="theme-options">
+							<button
+								type="button"
+								class="ghost theme-option"
+								class:selected-theme={theme === 'light'}
+								on:click={() => setTheme('light')}
+							>
+								Light
+							</button>
+							<button
+								type="button"
+								class="ghost theme-option"
+								class:selected-theme={theme === 'dark'}
+								on:click={() => setTheme('dark')}
+							>
+								Dark
+							</button>
+						</div>
+					</div>
+					<label>
+						Provider
+						<select value={provider} on:change={handleProviderChange}>
+							{#each PROVIDERS as providerOption}
+								<option value={providerOption}>{PROVIDER_LABELS[providerOption]}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						API key (saved in localStorage)
+						<input
+							type="password"
+							value={apiKey}
+							on:input={handleApiKeyInput}
+							placeholder="Paste your API key"
+						/>
+					</label>
+					<label class="toggle-field">
+						<span>
+							<input
+								type="checkbox"
+								checked={persistApiKey}
+								on:change={handleApiKeySaveToggle}
+								aria-label="Save API key in this browser"
+							/>
+							Save API key in localStorage
+						</span>
+						<small class="caution">
+							Notice: localStorage is stored only in this browser. Disable saving on shared computers and delete it after use.
+						</small>
+					</label>
+					<label>
+						Model
+						<input type="text" value={model} on:input={handleModelInput} />
+					</label>
+				</div>
+			{:else if settingsTab === 'rag'}
+				<div class="panel-block">
+					<h3>RAG Configuration</h3>
+					<label>
+						Chat title
+						<input type="text" bind:value={titleInput} />
+					</label>
+					<label>
+						System prompt
+						<textarea rows="4" bind:value={systemPromptInput}></textarea>
+					</label>
+					<div class="retrieval-grid">
+						<label>
+							Top K
+							<input type="number" min="1" max="12" bind:value={topKInput} />
+						</label>
+						<label>
+							Chunk size
+							<input type="number" min="200" max="4000" step="50" bind:value={chunkSizeInput} />
+						</label>
+						<label>
+							Overlap
+							<input type="number" min="0" max="2000" step="10" bind:value={overlapInput} />
+						</label>
+					</div>
+					<div class="actions">
+						<button type="button" on:click={applyBuilderSettings}>Apply Settings</button>
+					</div>
+				</div>
+
+				<div class="panel-block">
+					<h3>Share URL</h3>
+					<label>
+						Share URL
+						<input type="text" readonly value={shareUrl} />
+					</label>
+					<p class="help {urlRisk}">
+						Encoded payload: {encodedLength.toLocaleString()} chars | URL: {urlLength.toLocaleString()} chars
+					</p>
+					{#if urlRisk === 'warn'}
+						<p class="warn">Warning: link is getting long and may fail in some apps.</p>
+					{:else if urlRisk === 'danger'}
+						<p class="error">High risk: URL is too long for some browsers/messengers.</p>
+					{/if}
+				<div class="actions">
+						<button type="button" class="with-icon" on:click={copyShareUrl}>
+							<Copy size={14} />
+							<span>Copy URL</span>
+						</button>
+						<button type="button" class="with-icon ghost" on:click={downloadPayload}>
+							<Download size={14} />
+							<span>Download JSON</span>
+						</button>
+				</div>
+				</div>
+			{:else}
+				<div class="panel-block">
+					<h3>Documents</h3>
+					<p class="help">{docCount} doc(s), {docChars.toLocaleString()} characters</p>
+					<div class="doc-list">
+						{#each payload.docs as doc, index}
+							<article>
+								<div class="doc-head">
+									<strong>{index + 1}. {doc.title}</strong>
+									<button type="button" class="danger" on:click={() => removeDocument(doc.id)}>Remove</button>
+								</div>
+								<p>{doc.content.slice(0, 220)}{doc.content.length > 220 ? '...' : ''}</p>
+							</article>
+						{/each}
+					</div>
+
+					<label>
+						New document title (optional)
+						<input type="text" bind:value={newDocTitle} placeholder="Example: Product FAQ" />
+					</label>
+					<label>
+						New document content
+						<textarea rows="5" bind:value={newDocContent} placeholder="Paste source text here"></textarea>
+					</label>
+					<div class="actions">
+						<button type="button" on:click={addDocument}>Add Document</button>
+					</div>
+
+					<label>
+						Import files (.txt, .md, .json)
+						<input type="file" multiple accept=".txt,.md,.json" on:change={handleFileInput} />
+					</label>
+					<label>
+						Import from shared URL/hash
+						<input type="text" bind:value={importUrl} placeholder="https://.../#r=... or #r=..." />
+					</label>
+					<div class="actions">
+						<button type="button" class="ghost" on:click={applyImportUrl}>Import URL Payload</button>
+					</div>
+				</div>
+
+				<div class="panel-block">
+					<h3>Advanced JSON</h3>
+					<textarea bind:value={payloadJson} rows="12" spellcheck="false"></textarea>
+					<div class="actions">
+						<button type="button" on:click={applyPayloadJson}>Apply JSON</button>
+						<button type="button" class="ghost" on:click={resetPayload}>Reset Sample</button>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</div>
-{/if}
+</div>
 
 <style>
 	:global(:root) {
@@ -1114,6 +1669,9 @@
 		--surface: #ffffff;
 		--surface-soft: #f7f9fc;
 		--surface-muted: #eef3f8;
+		--surface-elevated: #ffffffed;
+		--surface-emphasis: #f2f6ff;
+		--surface-border: #d8e0ea;
 		--sidebar: #0f1727;
 		--sidebar-2: #111f35;
 		--text: #182334;
@@ -1137,11 +1695,45 @@
 		--message-avatar-user-bg: #cfe8ff;
 		--message-avatar-assistant-bg: #d9f0f4;
 		--label: #6b7d99;
+		--left-rail-width: 276px;
+		--left-rail-width-collapsed: 84px;
+		--left-rail-control-size: var(--control-height);
+		--left-rail-shell-gap: 0.9rem;
+		--left-rail-shell-padding: 1rem;
+		--left-rail-content-padding: 1rem;
+		--left-rail-content-padding-collapsed: 0.72rem 0.56rem 0.82rem;
+		--left-rail-content-gap: 0.86rem;
+		--left-rail-content-gap-collapsed: 0.52rem;
+		--left-rail-card-padding: 0.75rem;
+		--left-rail-card-gap: 0.45rem;
+		--left-rail-collapsed-action-gap: 0.48rem;
+		--left-rail-brand-title-size: 1.52rem;
+		--left-rail-brand-title-leading: 1.04;
+		--left-rail-brand-margin-top: 0.18rem;
+		--left-rail-action-pad-x: 0.74rem;
+		--left-rail-action-pad-y: 0.52rem;
+		--left-rail-rail-gap: 0.6rem;
+		--shell-gutter: min(1rem, 2.4vw);
+		--shell-max-w: 1820px;
+		--message-max-width: min(860px, 92%);
+		--left-rail-bg: linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
+		--left-rail-panel-line: #ffffff14;
+		--left-rail-card-bg: linear-gradient(140deg, var(--sidebar-card-bg) 0%, color-mix(in srgb, var(--sidebar-card-bg) 72%, transparent) 100%);
+		--left-rail-card-border: var(--sidebar-card-border);
+		--left-rail-card-primary: linear-gradient(140deg, #ffffff1f 0%, #ffffff0d 100%);
+		--left-rail-shadow: var(--shadow);
+		--left-rail-toggle-pos-shift: 0.2rem;
+		--left-rail-toggle-hover: color-mix(in srgb, var(--accent) 16%, var(--ghost-bg));
+		--panel-shadow: 0 10px 28px rgba(8, 24, 44, 0.2);
+		--panel-shadow-soft: 0 4px 16px rgba(9, 24, 44, 0.08);
+		--focus-ring-alpha: color-mix(in srgb, var(--accent) 16%, transparent);
+		--surface-divider: color-mix(in srgb, var(--line) 82%, transparent);
+		--panel-backplate: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
 		--input-bg: #ffffff;
 		--input-text: #132033;
 		--input-border: #bfccdf;
 		--input-focus: #2f8aa0;
-		--input-focus-ring: #2f8aa02a;
+		--input-focus-ring: color-mix(in srgb, var(--input-focus) 18%, transparent);
 		--ghost-bg: #e9eff7;
 		--ghost-text: #2f4667;
 		--modal-backdrop: #0b1324a3;
@@ -1151,7 +1743,18 @@
 		--error: #a11f33;
 		--status: #1b7a57;
 		--shadow: 0 18px 42px rgba(14, 26, 44, 0.14);
-	}
+		--shadow-soft: 0 8px 24px rgba(14, 26, 44, 0.08);
+		--control-height: 36px;
+		--control-gap: 0.56rem;
+		--control-pad-x: 0.88rem;
+		--control-pad-y: 0.5rem;
+		--small-pad-x: 0.6rem;
+		--small-pad-y: 0.32rem;
+		--radius-sm: 8px;
+		--radius-md: 12px;
+		--radius-lg: 16px;
+		--radius-xl: 22px;
+		}
 
 	:global(:root[data-theme='dark']) {
 		--bg: #0d141f;
@@ -1161,6 +1764,8 @@
 		--surface: #172132;
 		--surface-soft: #1d293d;
 		--surface-muted: #202d44;
+		--surface-elevated: #172132e8;
+		--surface-emphasis: #1d2f47;
 		--sidebar: #090f1a;
 		--sidebar-2: #0d1728;
 		--text: #e7eefb;
@@ -1184,11 +1789,41 @@
 		--message-avatar-user-bg: #2f557f;
 		--message-avatar-assistant-bg: #33576a;
 		--label: #a4b8d8;
+		--left-rail-width: 258px;
+		--left-rail-width-collapsed: 74px;
+		--left-rail-control-size: var(--control-height);
+		--left-rail-shell-gap: 0.72rem;
+		--left-rail-shell-padding: 0.9rem;
+		--left-rail-content-padding: 0.86rem;
+		--left-rail-content-padding-collapsed: 0.58rem 0.46rem 0.74rem;
+		--left-rail-content-gap: 0.72rem;
+		--left-rail-content-gap-collapsed: 0.44rem;
+		--left-rail-card-padding: 0.68rem;
+		--left-rail-card-gap: 0.38rem;
+		--left-rail-collapsed-action-gap: 0.4rem;
+		--left-rail-action-pad-x: 0.62rem;
+		--left-rail-action-pad-y: 0.44rem;
+		--left-rail-brand-title-size: 1.36rem;
+		--left-rail-brand-title-leading: 1.02;
+		--left-rail-brand-margin-top: 0.1rem;
+		--left-rail-bg: linear-gradient(165deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
+		--left-rail-panel-line: #ffffff1e;
+		--left-rail-card-bg: linear-gradient(150deg, #ffffff11 0%, #ffffff08 100%);
+		--left-rail-card-border: #ffffff28;
+		--left-rail-card-primary: linear-gradient(150deg, #ffffff16 0%, #ffffff0a 100%);
+		--left-rail-shadow: 0 14px 34px rgba(1, 5, 12, 0.38);
+		--left-rail-toggle-pos-shift: 0.15rem;
+		--left-rail-toggle-hover: color-mix(in srgb, var(--accent) 16%, var(--ghost-bg));
+		--panel-shadow: 0 10px 28px rgba(1, 5, 10, 0.52);
+		--panel-shadow-soft: 0 4px 16px rgba(1, 5, 10, 0.24);
+		--focus-ring-alpha: color-mix(in srgb, var(--accent) 18%, transparent);
+		--surface-divider: color-mix(in srgb, var(--line) 65%, transparent);
+		--panel-backplate: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
 		--input-bg: #131c2b;
 		--input-text: #deebff;
 		--input-border: #3d5272;
 		--input-focus: #66b4cb;
-		--input-focus-ring: #66b4cb2a;
+		--input-focus-ring: color-mix(in srgb, var(--input-focus) 22%, transparent);
 		--ghost-bg: #293851;
 		--ghost-text: #d7e4fb;
 		--modal-backdrop: #040810c9;
@@ -1198,16 +1833,35 @@
 		--error: #ff9db1;
 		--status: #98dfbf;
 		--shadow: 0 12px 36px rgba(0, 3, 10, 0.42);
-	}
+		--shadow-soft: 0 7px 26px rgba(0, 2, 8, 0.24);
+		--surface-border: #32405c;
+		--control-height: 34px;
+		--control-gap: 0.5rem;
+		--control-pad-x: 0.8rem;
+		--control-pad-y: 0.46rem;
+		--small-pad-x: 0.55rem;
+		--small-pad-y: 0.28rem;
+		--radius-sm: 8px;
+		--radius-md: 11px;
+		--radius-lg: 15px;
+		--radius-xl: 20px;
+		}
 
 	:global(body) {
 		margin: 0;
 		font-family: 'Source Sans 3', 'Noto Sans KR', sans-serif;
 		color: var(--text);
+		min-height: 100vh;
+		background-attachment: fixed;
 		background:
 			radial-gradient(circle at 0 0, var(--bg-spot-a) 0, transparent 35%),
 			radial-gradient(circle at 100% 0, var(--bg-spot-b) 0, transparent 38%),
 			linear-gradient(165deg, var(--bg) 0%, var(--bg-soft) 100%);
+	}
+
+	:global(::selection) {
+		background: color-mix(in srgb, var(--accent) 26%, white);
+		color: #08111f;
 	}
 
 	:global(*) {
@@ -1238,30 +1892,189 @@
 
 	.app-shell {
 		display: grid;
-		grid-template-columns: 290px minmax(0, 1fr) 330px;
-		gap: 0.9rem;
-		height: 100vh;
-		padding: 1rem;
-		max-width: 1920px;
+		grid-template-columns: var(--left-rail-width) minmax(0, 1fr) 330px;
+		gap: var(--left-rail-shell-gap);
+		height: 100dvh;
+		min-height: 100vh;
+		padding: var(--shell-gutter);
+		max-width: var(--shell-max-w);
 		margin: 0 auto;
+		align-items: stretch;
+	}
+
+	.app-shell.rail-collapsed {
+		grid-template-columns: var(--left-rail-width-collapsed) minmax(0, 1fr) 330px;
+	}
+
+	.left-rail-backdrop {
+		position: fixed;
+		inset: 0;
+		border: 0;
+		background: transparent;
+		z-index: 108;
+		pointer-events: none;
 	}
 
 	.left-rail {
-		border-radius: 18px;
-		background: linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
-		padding: 1rem;
+		border-radius: var(--radius-lg);
+		background: var(--left-rail-bg);
+		background-blend-mode: soft-light;
+		padding: var(--left-rail-content-padding);
 		display: flex;
 		flex-direction: column;
-		gap: 0.85rem;
-		box-shadow: var(--shadow);
+		gap: var(--left-rail-content-gap);
+		box-shadow: var(--left-rail-shadow);
 		color: var(--sidebar-text);
-		border: 1px solid #ffffff14;
+		border: 1px solid color-mix(in srgb, var(--left-rail-panel-line), transparent);
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+		position: relative;
+		min-height: 0;
+		width: var(--left-rail-width);
+		min-width: var(--left-rail-width);
+		max-width: var(--left-rail-width);
+		overflow: hidden;
+		transition:
+			width 180ms ease,
+			padding 180ms ease,
+			gap 180ms ease,
+			box-shadow 180ms ease,
+			border-color 180ms ease,
+			background-position 180ms ease;
+		background-position: top;
+		z-index: 111;
+	}
+
+	.left-rail.mobile-open {
+		overflow: auto;
+	}
+
+	.left-rail.collapsed {
+		padding: var(--left-rail-content-padding-collapsed);
+		gap: var(--left-rail-content-gap-collapsed);
+		align-items: stretch;
+		width: var(--left-rail-width-collapsed);
+		min-width: var(--left-rail-width-collapsed);
+		max-width: var(--left-rail-width-collapsed);
+	}
+
+	.rail-content {
+		display: flex;
+		flex-direction: column;
+		gap: var(--left-rail-content-gap);
+		min-height: 0;
+		overflow: auto;
+	}
+
+	.rail-toggle {
+		width: var(--left-rail-control-size);
+		height: var(--left-rail-control-size);
+		padding: 0;
+		display: grid;
+		place-items: center;
+		font-size: 1rem;
+		font-weight: 700;
+		border: 1px solid var(--line);
+		background: var(--ghost-bg);
+		color: var(--sidebar-text);
+		transition: background-color 150ms ease, border-color 150ms ease;
+	}
+
+	.rail-toggle:hover {
+		background-color: var(--left-rail-toggle-hover);
+	}
+
+	.left-rail:not(.collapsed) .rail-toggle {
+		align-self: flex-end;
+		justify-self: end;
+		margin-bottom: var(--left-rail-toggle-pos-shift);
+	}
+
+	.left-rail.collapsed .rail-toggle {
+		margin-inline: auto;
+		align-self: center;
+		justify-self: center;
+		margin-bottom: 0;
+	}
+
+	.left-rail .brand,
+	.left-rail .rail-card {
+		transition: opacity 150ms ease;
+	}
+
+	.left-rail.collapsed .brand,
+	.left-rail.collapsed .rail-card {
+		display: none;
+	}
+
+	.left-rail.collapsed .rail-actions {
+		gap: var(--left-rail-collapsed-action-gap);
+		justify-items: center;
+	}
+
+	.left-rail.collapsed .rail-actions button {
+		display: grid;
+		place-items: center;
+		width: var(--left-rail-control-size);
+		min-width: var(--left-rail-control-size);
+		max-width: var(--left-rail-control-size);
+		height: var(--left-rail-control-size);
+		min-height: var(--left-rail-control-size);
+		max-height: var(--left-rail-control-size);
+		padding: 0;
+		margin-inline: auto;
+	}
+
+	.rail-actions {
+		display: grid;
+		gap: 0.5rem;
+	}
+
+	.rail-actions button {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		text-align: left;
+		width: 100%;
+		min-height: var(--left-rail-control-size);
+		padding: var(--left-rail-action-pad-y) var(--left-rail-action-pad-x);
+		transition: background-color 150ms ease, border-color 150ms ease;
+	}
+
+	.rail-actions button:hover {
+		background: color-mix(in srgb, var(--line) 20%, var(--ghost-bg));
+	}
+
+	.rail-actions button.ghost:hover {
+		background: color-mix(in srgb, var(--line) 26%, var(--ghost-bg));
+	}
+
+	.rail-actions button .rail-icon {
+		min-width: 16px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.left-rail.collapsed .rail-label {
+		display: none;
+	}
+
+	.left-rail .rail-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
+	}
+
+	.left-rail .rail-icon :global(svg) {
+		display: block;
 	}
 
 	.brand h1 {
-		font-size: 1.5rem;
-		line-height: 1.08;
-		margin-top: 0.2rem;
+		font-size: var(--left-rail-brand-title-size);
+		line-height: var(--left-rail-brand-title-leading);
+		margin-top: var(--left-rail-brand-margin-top);
 	}
 
 	.rail-note {
@@ -1271,22 +2084,18 @@
 		color: var(--sidebar-muted);
 	}
 
-	.rail-actions {
-		display: grid;
-		gap: 0.5rem;
-	}
-
 	.rail-card {
-		padding: 0.75rem;
-		border-radius: 12px;
-		background: var(--sidebar-card-bg);
-		border: 1px solid var(--sidebar-card-border);
+		padding: var(--left-rail-card-padding);
+		border-radius: var(--radius-md);
+		background: var(--left-rail-card-bg);
+		border: 1px solid var(--left-rail-card-border);
 		display: grid;
-		gap: 0.45rem;
+		gap: var(--left-rail-card-gap);
+		box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff2d 45%, transparent);
 	}
 
 	.rail-card.primary {
-		background: linear-gradient(140deg, #ffffff1b 0%, #ffffff09 100%);
+		background: var(--left-rail-card-primary);
 	}
 
 	.rail-card h2 {
@@ -1365,6 +2174,69 @@
 		color: #ffc2cd;
 	}
 
+	.session-list {
+		display: grid;
+		gap: 0.45rem;
+		max-height: min(300px, 40dvh);
+		overflow: auto;
+		padding-right: 2px;
+	}
+
+	.session-item {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 0.38rem;
+		align-items: stretch;
+		min-height: var(--control-height);
+	}
+
+	.session-btn {
+		display: grid;
+		text-align: left;
+		gap: 0.22rem;
+		background: var(--surface-soft);
+		border: 1px solid var(--line);
+		color: var(--text);
+		width: 100%;
+		padding: 0.52rem 0.58rem;
+		transition:
+			border-color 150ms ease,
+			background-color 150ms ease,
+			transform 150ms ease;
+		border-radius: var(--radius-sm);
+	}
+
+	.session-btn:hover {
+		border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+		background-color: color-mix(in srgb, var(--accent-soft) 20%, var(--surface-soft));
+		transform: translateY(-1px);
+	}
+
+	.session-btn.active {
+		background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+		border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+	}
+
+	.session-btn.active:hover {
+		background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+	}
+
+	.session-title {
+		font-size: 0.84rem;
+		font-weight: 700;
+		display: block;
+		color: var(--text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.session-meta {
+		font-size: 0.72rem;
+		color: var(--muted);
+		line-height: 1.3;
+	}
+
 	.rail-inline-actions {
 		display: flex;
 		gap: 0.45rem;
@@ -1380,12 +2252,14 @@
 		display: grid;
 		grid-template-rows: auto auto 1fr auto;
 		gap: 0.75rem;
-		height: calc(100vh - 2rem);
-		padding: 0.9rem;
-		border-radius: 18px;
-		background: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
-		box-shadow: var(--shadow);
-		border: 1px solid var(--line);
+		height: calc(100dvh - (2 * var(--shell-gutter)));
+		padding: 0.95rem;
+		border-radius: var(--radius-lg);
+		background: var(--panel-backplate);
+		box-shadow: var(--panel-shadow-soft);
+		border: 1px solid color-mix(in srgb, var(--surface-border) 70%, transparent);
+		overflow: hidden;
+		min-height: 0;
 	}
 
 	.chat-header {
@@ -1395,6 +2269,60 @@
 		align-items: flex-start;
 		padding-bottom: 0.58rem;
 		border-bottom: 1px solid var(--line);
+		flex-wrap: wrap;
+	}
+
+	.chat-toolbar {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		flex-wrap: wrap;
+	}
+
+	.mobile-menu-btn {
+		flex: 0 0 auto;
+		min-width: 36px;
+		padding: 0;
+		width: 36px;
+		height: 36px;
+	}
+
+	.chat-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.3rem 0.6rem;
+		border-radius: 999px;
+		background: var(--surface-muted);
+		border: 1px solid var(--line);
+		font-size: 0.76rem;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+
+	.chat-pill.chat-pill-ok {
+		border-color: color-mix(in srgb, #4fca98 40%, var(--line));
+		background: color-mix(in srgb, #4fca98 18%, var(--surface-soft));
+		color: #085f3d;
+	}
+
+	.chat-pill.chat-pill-warn {
+		border-color: color-mix(in srgb, #f4b54f 40%, var(--line));
+		background: color-mix(in srgb, #f4b54f 18%, var(--surface-soft));
+		color: #7a4a08;
+	}
+
+	.mobile-pill-btn {
+		cursor: pointer;
+		text-transform: none;
+		text-decoration: none;
+		font-size: 0.74rem;
+		padding-inline: 0.54rem;
+	}
+
+	.mobile-pill-btn:hover,
+	.mobile-pill-btn:active {
+		filter: none;
 	}
 
 	.chat-title {
@@ -1404,6 +2332,7 @@
 
 	.chat-title h2 {
 		font-size: 1.28rem;
+		line-height: 1.24;
 	}
 
 	.chat-subtitle {
@@ -1411,14 +2340,8 @@
 		color: var(--muted);
 	}
 
-	.header-actions {
-		display: flex;
-		gap: 0.4rem;
-		flex-wrap: wrap;
-	}
-
 	.notice {
-		border-radius: 10px;
+		border-radius: var(--radius-md);
 		padding: 0.62rem 0.72rem;
 		border: 1px solid var(--line);
 		display: flex;
@@ -1426,6 +2349,8 @@
 		justify-content: space-between;
 		gap: 0.6rem;
 		font-size: 0.92rem;
+		line-height: 1.35;
+		background: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
 	}
 
 	.notice.warning {
@@ -1436,11 +2361,13 @@
 
 	.message-stream {
 		overflow-y: auto;
-		padding: 0.4rem 0.25rem;
+		padding: 0.55rem 0.25rem 0.4rem;
 		display: flex;
 		flex-direction: column;
 		gap: 0.82rem;
 		scroll-behavior: smooth;
+		border-top: 1px solid var(--surface-divider);
+		padding-top: 0.8rem;
 	}
 
 	.empty-state {
@@ -1450,6 +2377,8 @@
 		border: 1px solid var(--line);
 		display: grid;
 		gap: 0.7rem;
+		border-left: 3px solid var(--accent);
+		box-shadow: var(--panel-shadow-soft);
 	}
 
 	.empty-state h3 {
@@ -1459,6 +2388,7 @@
 	.empty-state p {
 		color: var(--muted);
 		font-size: 0.9rem;
+		line-height: 1.45;
 	}
 
 	.starter-grid {
@@ -1469,13 +2399,24 @@
 
 	.starter-card {
 		text-align: left;
-		padding: 0.64rem;
+		padding: 0.72rem;
 		border: 1px solid var(--line);
 		border-radius: 11px;
 		background: var(--surface);
 		display: grid;
-		gap: 0.28rem;
+		gap: 0.24rem;
 		color: var(--text);
+		box-shadow: var(--panel-shadow-soft);
+		background:
+			linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
+		transition:
+			border-color 150ms ease,
+			transform 150ms ease;
+	}
+
+	.starter-card:hover {
+		border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+		transform: translateY(-1px);
 	}
 
 	.starter-card span {
@@ -1491,7 +2432,7 @@
 
 	.message-row {
 		display: grid;
-		grid-template-columns: 40px minmax(0, min(760px, 92%));
+		grid-template-columns: 40px minmax(0, var(--message-max-width));
 		gap: 0.5rem;
 		align-items: flex-end;
 		animation: rise 220ms ease both;
@@ -1499,7 +2440,7 @@
 
 	.message-row.user {
 		justify-content: end;
-		grid-template-columns: minmax(0, min(760px, 92%)) 40px;
+		grid-template-columns: minmax(0, var(--message-max-width)) 40px;
 	}
 
 	.message-row.user .message-avatar {
@@ -1528,11 +2469,12 @@
 	.message-bubble {
 		display: grid;
 		gap: 0.38rem;
-		padding: 0.74rem 0.84rem;
-		border-radius: 12px;
+		padding: 0.76rem 0.9rem;
+		border-radius: var(--radius-md);
 		background: var(--message-assistant-bg);
 		border: 1px solid var(--message-assistant-border);
-		box-shadow: 0 3px 10px #0d162310;
+		box-shadow: var(--panel-shadow-soft);
+		line-height: 1.52;
 	}
 
 	.message-row.user .message-bubble {
@@ -1568,6 +2510,7 @@
 	.message-bubble p {
 		line-height: 1.45;
 		white-space: pre-wrap;
+		font-size: 0.93rem;
 	}
 
 	.typing-indicator {
@@ -1598,6 +2541,7 @@
 		padding-top: 0.58rem;
 		border-top: 1px solid var(--line);
 		background: linear-gradient(180deg, transparent 0%, var(--surface) 34%);
+		padding-inline: 0.1rem;
 	}
 
 	.composer textarea {
@@ -1612,9 +2556,22 @@
 		align-items: center;
 	}
 
+	.send-btn {
+		display: inline-flex;
+		gap: 0.45rem;
+		align-items: center;
+		justify-content: center;
+		min-width: 154px;
+	}
+
+	.send-btn :global(svg) {
+		transform: translateY(1px);
+	}
+
 	.composer-foot p {
 		font-size: 0.82rem;
 		color: var(--muted);
+		line-height: 1.35;
 	}
 
 	.composer-actions {
@@ -1628,17 +2585,37 @@
 		display: grid;
 		grid-template-rows: auto minmax(0, 1fr) auto;
 		gap: 0.75rem;
-		height: calc(100vh - 2rem);
+		height: calc(100dvh - (2 * var(--shell-gutter)));
+		min-height: 0;
+	}
+
+	.context-sheet-backdrop {
+		position: fixed;
+		inset: 0;
+		border: 0;
+		background: transparent;
+		z-index: 109;
+		pointer-events: none;
+	}
+
+	.context-column.mobile-open {
+		position: relative;
+		grid-template-columns: 1fr;
+	}
+
+	.mobile-context-head {
+		display: none;
 	}
 
 	.context-card {
-		border-radius: 15px;
+		border-radius: var(--radius-md);
 		border: 1px solid var(--line);
-		background: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
+		background: var(--panel-backplate);
 		padding: 0.8rem;
 		display: grid;
 		gap: 0.55rem;
-		box-shadow: var(--shadow);
+		box-shadow: var(--panel-shadow-soft);
+		border-color: color-mix(in srgb, var(--line) 84%, transparent);
 	}
 
 	.context-card h3 {
@@ -1657,6 +2634,14 @@
 	.mini-btn {
 		padding: 0.32rem 0.58rem;
 		font-size: 0.8rem;
+		min-height: 28px;
+		height: 28px;
+		line-height: 1;
+		min-width: 60px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.32rem;
 	}
 
 	.panel-meta {
@@ -1677,6 +2662,7 @@
 		gap: 0.5rem;
 		max-height: min(48vh, 460px);
 		overflow: auto;
+		scrollbar-gutter: stable;
 	}
 
 	.retrieval-item {
@@ -1684,6 +2670,12 @@
 		border-radius: 10px;
 		background: var(--surface);
 		border: 1px solid var(--line);
+		transition: border-color 150ms ease;
+		background: linear-gradient(180deg, var(--surface) 0%, var(--surface-soft) 100%);
+	}
+
+	.retrieval-item:hover {
+		border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
 	}
 
 	.retrieval-head {
@@ -1729,29 +2721,83 @@
 		border-radius: 10px;
 	}
 
-	.modal-backdrop {
+	.settings-drawer-backdrop {
 		position: fixed;
 		inset: 0;
+		display: flex;
+		justify-content: center;
+		align-items: stretch;
+		z-index: 120;
 		background: var(--modal-backdrop);
-		display: grid;
-		place-items: center;
-		padding: 1rem;
-		z-index: 30;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 180ms ease;
+		backdrop-filter: blur(2px);
+		-webkit-backdrop-filter: blur(2px);
 	}
 
-	.settings-modal {
-		width: min(980px, 100%);
-		max-height: min(92vh, 920px);
+	.settings-drawer-backdrop:not(.modal) {
+		justify-content: flex-end;
+		align-items: stretch;
+	}
+
+	.settings-drawer-backdrop.open {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.settings-drawer-backdrop.modal {
+		justify-content: center;
+		align-items: center;
+		padding: 1.2rem;
+	}
+
+	.settings-drawer {
+		position: relative;
+		width: min(460px, 88vw);
+		max-height: 100%;
+		height: 100%;
 		overflow: auto;
-		border-radius: 16px;
 		background: var(--surface);
 		border: 1px solid var(--line);
-		box-shadow: 0 24px 54px rgba(15, 25, 45, 0.34);
+		box-shadow: var(--panel-shadow);
 		display: grid;
 		grid-template-rows: auto auto 1fr;
+		transform: translateX(100%);
+		transition-behavior: normal;
+		transition:
+			transform 240ms cubic-bezier(0.2, 0.9, 0.2, 1),
+			opacity 200ms ease;
+		opacity: 0;
+		z-index: 121;
+		border-radius: var(--radius-xl);
 	}
 
-	.modal-head {
+	.settings-drawer.drawer {
+		border-radius: var(--radius-lg);
+	}
+
+	.settings-drawer.open {
+		transform: translateX(0);
+		opacity: 1;
+	}
+
+	.settings-drawer.modal {
+		width: min(980px, calc(100vw - 2.4rem));
+		max-height: calc(100vh - 2.25rem);
+		height: min(92vh, 860px);
+		transform: translateY(14px) scale(0.98);
+		box-shadow: var(--panel-shadow);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-lg);
+		margin-inline: auto;
+	}
+
+	.settings-drawer.modal.open {
+		transform: translateY(0) scale(1);
+	}
+
+	.drawer-head {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
@@ -1759,7 +2805,7 @@
 		border-bottom: 1px solid var(--line);
 	}
 
-	.modal-head h2 {
+	.drawer-head h2 {
 		font-size: 1.18rem;
 	}
 
@@ -1768,11 +2814,12 @@
 		gap: 0.45rem;
 		padding: 0.7rem 1rem;
 		border-bottom: 1px solid var(--line);
-		background: var(--surface-soft);
+		background: linear-gradient(180deg, var(--surface-soft), var(--surface));
 	}
 
 	.tab-row button {
-		padding: 0.45rem 0.74rem;
+		min-height: var(--control-height);
+		padding: 0.42rem 0.7rem;
 		background: var(--ghost-bg);
 		color: var(--ghost-text);
 		font-weight: 700;
@@ -1792,11 +2839,17 @@
 
 	.panel-block {
 		padding: 0.8rem;
-		border-radius: 12px;
+		border-radius: var(--radius-md);
 		border: 1px solid var(--line);
 		background: var(--surface-soft);
 		display: grid;
 		gap: 0.62rem;
+		box-shadow: var(--panel-shadow-soft);
+		transition: border-color 150ms ease;
+	}
+
+	.panel-block:hover {
+		border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
 	}
 
 	.panel-block h3 {
@@ -1828,6 +2881,29 @@
 		color: #f1fdff;
 	}
 
+	.toggle-field {
+		gap: 0.42rem;
+	}
+
+	.toggle-field span {
+		display: flex;
+		gap: 0.44rem;
+		align-items: center;
+	}
+
+	.toggle-field input[type='checkbox'] {
+		width: auto;
+		margin: 0;
+		accent-color: var(--accent);
+	}
+
+	.toggle-field .caution {
+		font-size: 0.74rem;
+		font-weight: 500;
+		color: var(--muted);
+		line-height: 1.35;
+	}
+
 	label {
 		display: grid;
 		gap: 0.3rem;
@@ -1848,11 +2924,13 @@
 	textarea {
 		width: 100%;
 		border: 1px solid var(--input-border);
-		border-radius: 10px;
-		padding: 0.58rem 0.66rem;
+		border-radius: var(--radius-sm);
+		padding: 0.54rem 0.64rem;
+		min-height: var(--control-height);
 		background: var(--input-bg);
 		color: var(--input-text);
-		transition: box-shadow 150ms ease, border-color 150ms ease;
+		line-height: 1.35;
+		transition: box-shadow 150ms ease, border-color 150ms ease, background-color 150ms ease;
 	}
 
 	input:focus,
@@ -1863,6 +2941,13 @@
 		outline: none;
 	}
 
+	input:focus-visible,
+	select:focus-visible,
+	textarea:focus-visible {
+		box-shadow: 0 0 0 3px var(--focus-ring-alpha);
+		border-color: var(--input-focus);
+	}
+
 	textarea {
 		resize: vertical;
 		line-height: 1.4;
@@ -1870,22 +2955,27 @@
 
 	button {
 		border: none;
-		border-radius: 10px;
-		padding: 0.55rem 0.86rem;
+		border-radius: var(--radius-sm);
+		min-height: var(--control-height);
+		padding: var(--control-pad-y) var(--control-pad-x);
 		background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
 		color: #f1fdff;
 		font-weight: 700;
 		cursor: pointer;
-		transition: transform 140ms ease, filter 160ms ease;
+		transition:
+			transform 140ms ease,
+			filter 160ms ease,
+			box-shadow 140ms ease,
+			background 160ms ease;
 	}
 
 	button:hover {
-		filter: brightness(1.04);
-		transform: translateY(-1px);
+		filter: brightness(1.06);
 	}
 
 	button:active {
 		transform: translateY(0);
+		filter: brightness(0.99);
 	}
 
 	button:disabled {
@@ -1894,10 +2984,49 @@
 		transform: none;
 	}
 
+	button:focus-visible {
+		outline: none;
+		box-shadow: inset 0 0 0 1px var(--line), 0 0 0 2px var(--focus-ring-alpha);
+	}
+
 	button.ghost,
 	.icon-btn {
 		background: var(--ghost-bg);
 		color: var(--ghost-text);
+		box-shadow: none;
+	}
+
+	button.ghost:hover {
+		filter: none;
+		background: color-mix(in srgb, var(--ghost-bg) 45%, var(--surface));
+	}
+
+	button.with-icon {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.38rem;
+		justify-content: center;
+	}
+
+	button.with-icon :global(svg) {
+		flex-shrink: 0;
+	}
+
+	button.icon-btn {
+		min-height: auto;
+		padding: 0;
+		width: var(--control-height);
+		height: var(--control-height);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.icon-btn.mini-btn {
+		width: 28px;
+		height: 28px;
+		min-width: 28px;
+		min-height: 28px;
 	}
 
 	button.danger {
@@ -1926,8 +3055,14 @@
 	.doc-list article {
 		padding: 0.54rem 0.58rem;
 		border: 1px solid var(--line);
-		border-radius: 9px;
+		border-radius: var(--radius-sm);
 		background: var(--surface);
+		display: grid;
+		gap: 0.22rem;
+	}
+
+	.doc-list article:hover {
+		border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
 	}
 
 	.doc-list p {
@@ -1948,6 +3083,9 @@
 	.doc-head button {
 		padding: 0.3rem 0.54rem;
 		font-size: 0.78rem;
+		min-width: auto;
+		height: 26px;
+		min-height: 26px;
 	}
 
 	.help {
@@ -1967,29 +3105,51 @@
 	}
 
 	/* User preference: keep UI mostly flat (minimal rounding) */
+	/* Layout should stay softly rounded; keep pills as full circles */
 	.left-rail,
-	.rail-card,
-	.chip-row span,
-	.pill,
 	.chat-column,
 	.notice,
 	.empty-state,
 	.starter-card,
-	.message-avatar,
 	.message-bubble,
 	.context-card,
 	.panel-empty,
 	.retrieval-item,
 	.error,
 	.status,
-	.settings-modal,
+	.settings-drawer,
 	.panel-block,
 	.doc-list article,
 	input,
 	select,
 	textarea,
-	button {
-		border-radius: 0;
+	button:not(.icon-btn) {
+		border-radius: var(--radius-md);
+	}
+
+	.left-rail {
+		border-radius: var(--radius-lg);
+	}
+
+	.message-avatar {
+		border-radius: 50%;
+	}
+
+	.settings-drawer {
+		border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+	}
+
+	.settings-drawer.modal {
+		border-radius: var(--radius-lg);
+	}
+
+	.rail-card {
+		border-radius: var(--radius-md);
+	}
+
+	.message-row.user .message-avatar,
+	.message-row.assistant .message-avatar {
+		border-radius: 50%;
 	}
 
 	:global(::-webkit-scrollbar) {
@@ -2033,7 +3193,11 @@
 
 	@media (max-width: 1460px) {
 		.app-shell {
-			grid-template-columns: 270px minmax(0, 1fr);
+			grid-template-columns: var(--left-rail-width) minmax(0, 1fr);
+		}
+
+		.app-shell.rail-collapsed {
+			grid-template-columns: var(--left-rail-width-collapsed) minmax(0, 1fr);
 		}
 
 		.context-column {
@@ -2049,17 +3213,31 @@
 	}
 
 	@media (max-width: 1100px) {
+		:global(:root) {
+			--control-height: 38px;
+			--control-pad-y: 0.5rem;
+		}
+
+		.settings-drawer.drawer {
+			top: 0.75rem;
+			height: calc(100dvh - 1.5rem);
+		}
+
 		.app-shell {
 			grid-template-columns: 1fr;
 			height: auto;
 			min-height: 100vh;
-			padding: 0.75rem;
+			padding: clamp(0.65rem, 2vw, 0.95rem);
+		}
+
+		.app-shell.rail-collapsed {
+			grid-template-columns: 1fr;
 		}
 
 		.chat-column {
 			order: 1;
 			height: auto;
-			min-height: 68vh;
+			min-height: min(72dvh, 760px);
 		}
 
 		.left-rail {
@@ -2070,9 +3248,162 @@
 			order: 3;
 			grid-template-columns: 1fr;
 		}
+
+		.settings-drawer-backdrop.modal {
+			justify-content: center;
+			align-items: center;
+			padding: min(1rem, 4vw);
+		}
+
+		.settings-drawer {
+			width: min(560px, 100vw);
+			max-width: 100%;
+		}
+
+		.settings-drawer.modal {
+			width: min(560px, 100vw);
+			max-width: 100%;
+			max-height: min(92vh, 860px);
+			height: min(92vh, 860px);
+			transform: translateY(8px) scale(0.98);
+		}
+
+		.settings-drawer.modal.open {
+			transform: translateY(0) scale(1);
+		}
+
+		.left-rail {
+			min-height: min(52dvh, 420px);
+		}
 	}
 
 	@media (max-width: 760px) {
+		:global(:root) {
+			--control-height: 42px;
+			--control-pad-y: 0.55rem;
+			--radius-sm: 9px;
+			--radius-md: 11px;
+			--radius-lg: 14px;
+			--radius-xl: 18px;
+		}
+
+		.settings-drawer.drawer {
+			top: 0;
+			height: 100dvh;
+		}
+
+		.app-shell {
+			padding: 0.5rem;
+			gap: 0.6rem;
+		}
+
+		.left-rail-backdrop {
+			background: var(--modal-backdrop);
+			pointer-events: auto;
+			z-index: 109;
+		}
+
+		.left-rail {
+			width: min(300px, 85vw);
+			min-width: min(300px, 85vw);
+			max-width: min(300px, 85vw);
+			height: 100dvh;
+			position: fixed;
+			top: 0;
+			left: 0;
+			transform: translateX(-110%);
+			border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+			z-index: 110;
+			padding: calc(var(--left-rail-content-padding) + 0.22rem);
+		}
+
+		.left-rail.collapsed {
+			width: min(300px, 85vw);
+			min-width: min(300px, 85vw);
+			max-width: min(300px, 85vw);
+		}
+
+		.left-rail.mobile-open {
+			transform: translateX(0);
+		}
+
+		.left-rail:not(.mobile-open) {
+			pointer-events: none;
+		}
+
+		.left-rail:not(.mobile-open) .rail-content {
+			overflow: hidden;
+		}
+
+		.left-rail.mobile-open .rail-content {
+			overflow: auto;
+		}
+
+		.left-rail.collapsed .rail-content,
+		.left-rail.collapsed .rail-card,
+		.left-rail.collapsed .brand {
+			width: auto;
+			max-width: none;
+			min-width: 0;
+		}
+
+		.left-rail.collapsed .brand,
+		.left-rail.collapsed .rail-card {
+			display: block;
+		}
+
+		.left-rail.collapsed .rail-label {
+			display: inline;
+		}
+
+		.left-rail.collapsed .rail-actions {
+			gap: 0.45rem;
+		}
+
+		.left-rail.collapsed .rail-actions button,
+		.left-rail .rail-actions button {
+			width: 100%;
+			display: flex;
+			align-items: center;
+			justify-content: flex-start;
+			gap: 0.55rem;
+			min-height: 40px;
+			max-width: none;
+			padding-inline: 0.7rem;
+			margin-inline: 0;
+		}
+
+		.left-rail:not(.collapsed) .rail-toggle,
+		.left-rail.collapsed .rail-toggle {
+			align-self: flex-start;
+			justify-self: end;
+			width: 34px;
+			height: 34px;
+			min-width: 34px;
+			min-height: 34px;
+			padding: 0;
+			border-radius: 999px;
+			margin-inline-end: auto;
+			margin-bottom: 0.22rem;
+		}
+
+		.left-rail:not(.collapsed) .rail-toggle {
+			margin-left: auto;
+			margin-bottom: 0.25rem;
+		}
+
+		.left-rail.collapsed .rail-toggle {
+			margin-inline: 0;
+		}
+
+		.app-shell,
+		.chat-column,
+		.left-rail,
+		.context-column {
+			--control-gap: 0.45rem;
+			--small-pad-x: 0.58rem;
+		}
+
 		.starter-grid {
 			grid-template-columns: 1fr;
 		}
@@ -2080,15 +3411,14 @@
 		.chat-header {
 			flex-direction: column;
 			align-items: flex-start;
+			gap: 0.55rem;
 		}
 
-		.header-actions {
+		.chat-toolbar {
 			width: 100%;
-		}
-
-		.header-actions button {
-			flex: 1;
-			min-width: 90px;
+			justify-content: flex-start;
+			align-items: stretch;
+			gap: 0.28rem;
 		}
 
 		.message-row,
@@ -2104,6 +3434,12 @@
 		.composer-foot {
 			flex-direction: column;
 			align-items: flex-start;
+			gap: 0.5rem;
+		}
+
+		.composer-foot p {
+			font-size: 0.76rem;
+			color: color-mix(in srgb, var(--muted) 88%, var(--text));
 		}
 
 		.composer-actions {
@@ -2115,13 +3451,137 @@
 			grid-template-columns: 1fr;
 		}
 
-		.settings-modal {
-			max-height: 94vh;
+		.settings-drawer-backdrop,
+		.settings-drawer-backdrop.modal {
+			justify-content: stretch;
+			align-items: stretch;
+			padding: 0;
+		}
+
+		.settings-drawer {
+			width: 100vw;
+			height: 100dvh;
+			max-height: 100dvh;
+			border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+			transform: translateY(100%);
+		}
+
+		.settings-drawer.open {
+			transform: translateY(0);
+		}
+
+		.settings-drawer.modal {
+			width: 100%;
+			height: 100dvh;
+			max-height: 100dvh;
+			transform: translateY(100%);
+		}
+
+		.settings-drawer.modal.open {
+			transform: translateY(0) scale(1);
 		}
 
 		.tab-row {
 			display: grid;
 			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 0.35rem;
+			padding: 0.55rem;
+		}
+
+		.tab-row button {
+			min-height: 34px;
+			padding-inline: 0.55rem;
+		}
+
+		.tab-panel {
+			padding: 0.75rem 0.75rem 0.9rem;
+		}
+
+		.drawer-head {
+			padding: 0.7rem 0.75rem;
+		}
+
+		.context-column,
+		.chat-column,
+		.left-rail {
+			min-height: 0;
+		}
+
+		.context-column {
+			display: none;
+			background: var(--panel-backplate);
+			z-index: 110;
+			position: fixed;
+			left: var(--shell-gutter);
+			right: var(--shell-gutter);
+			top: 12dvh;
+			bottom: calc(0.5rem + env(safe-area-inset-bottom));
+			border: 1px solid color-mix(in srgb, var(--surface-border) 74%, transparent);
+			border-radius: var(--radius-lg);
+			box-shadow: var(--panel-shadow);
+			overflow: auto;
+			grid-template-rows: auto minmax(0, 1fr) auto;
+			max-height: min(74dvh, 620px);
+			padding: 0;
+		}
+
+		.context-column.mobile-open {
+			display: grid;
+		}
+
+		.context-column .context-card {
+			border-radius: 0;
+			border-inline: none;
+			border-left: none;
+			border-right: none;
+			box-shadow: none;
+			background: transparent;
+		}
+
+		.context-column .context-card:not(:last-child) {
+			border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+		}
+
+		.context-sheet-backdrop {
+			pointer-events: auto;
+			background: var(--modal-backdrop);
+			z-index: 109;
+		}
+
+		.context-column:not(.mobile-open) + .context-sheet-backdrop {
+			display: none;
+		}
+
+		.mobile-context-head {
+			position: sticky;
+			top: 0;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 0.72rem 0.75rem 0.5rem;
+			border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+			background: linear-gradient(180deg, color-mix(in srgb, var(--panel-backplate) 94%, transparent) 0%, var(--panel-backplate) 100%);
+			z-index: 2;
+		}
+
+		.mobile-context-head h3 {
+			font-size: 0.96rem;
+		}
+
+		.mobile-context-head .icon-btn {
+			width: 30px;
+			height: 30px;
+			min-width: 30px;
+			min-height: 30px;
+		}
+
+		.chat-pill {
+			padding: 0.22rem 0.44rem;
+			font-size: 0.68rem;
+		}
+
+		.mobile-pill-btn {
+			max-height: 32px;
 		}
 	}
 </style>
