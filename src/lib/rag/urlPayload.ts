@@ -13,7 +13,7 @@ const DEFAULT_RETRIEVAL = {
 	overlap: 120
 };
 
-const SAMPLE_DOC = `Static Rag Chat은 RAG 문서를 URL 해시에 압축해 전달하는 정적 채팅 앱입니다.\n문맥 데이터는 공유 URL에 담겨 이동하고, 각 사용자 브라우저는 본인 API 키만 로컬에 입력해 동일한 세션을 재현할 수 있습니다.\n백엔드를 운영하지 않아도 URL 하나만으로 같은 컨텍스트의 대화를 공유할 수 있다는 점이 핵심입니다.`;
+const SAMPLE_DOC = `Static Rag Chat is a static chat app that compresses RAG documents into a URL hash for sharing.\nContext data travels inside the shared URL, and each user can reproduce the same session by entering their own API key locally in the browser.\nThe key idea is that one URL can share the same contextual conversation without running any backend.`;
 
 export function createDefaultPayload(): RagPayload {
 	return {

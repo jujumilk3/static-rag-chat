@@ -1,20 +1,5 @@
+import MiniSearch from 'minisearch';
 import type { RagPayload } from './types';
-
-export interface IndexedChunk {
-	docId: string;
-	docTitle: string;
-	content: string;
-	tokens: string[];
-	termFrequency: Record<string, number>;
-	tokenCount: number;
-}
-
-export interface RagIndex {
-	chunks: IndexedChunk[];
-	topK: number;
-	avgChunkLength: number;
-	idfByToken: Record<string, number>;
-}
 
 export interface RetrievedChunk {
 	docTitle: string;
@@ -22,7 +7,21 @@ export interface RetrievedChunk {
 	score: number;
 }
 
-const TOKEN_REGEX = /[A-Za-z0-9_\-\u3131-\uD79D]+/g;
+export interface IndexedChunk {
+	docId: string;
+	docTitle: string;
+	content: string;
+	contentTokenCount: number;
+}
+
+export interface RagIndex {
+	chunks: IndexedChunk[];
+	topK: number;
+	searchIndex: MiniSearch<IndexedChunk>;
+	chunkById: Map<string, IndexedChunk>;
+}
+
+const TOKEN_REGEX = /[A-Za-z0-9_\-]+/g;
 const STOPWORDS = new Set([
 	'the',
 	'and',
@@ -61,8 +60,47 @@ const STOPWORDS = new Set([
 	'had',
 	'our'
 ]);
-const BM25_K1 = 1.2;
-const BM25_B = 0.75;
+
+const ENGLISH_STEM_SUFFIXES = ['ingly', 'edly', 'ing', 'ed', 'ies', 'es', 'ly', 's'];
+
+function expandEnglishToken(token: string): string[] {
+	if (token.length <= 2) {
+		return [token];
+	}
+
+	const variants = new Set<string>([token]);
+	const queue = [token];
+
+	while (queue.length > 0) {
+		const current = queue.shift();
+		if (!current) {
+			continue;
+		}
+		for (const suffix of ENGLISH_STEM_SUFFIXES) {
+			if (!current.endsWith(suffix)) {
+				continue;
+			}
+			if (current.length <= suffix.length + 2) {
+				continue;
+			}
+
+			let stem = current.slice(0, -suffix.length);
+			if (suffix === 'ies' && stem.length > 1) {
+				stem = `${stem}y`;
+			}
+			if (stem.length <= 2) {
+				continue;
+			}
+
+			if (!variants.has(stem)) {
+				variants.add(stem);
+				queue.push(stem);
+			}
+		}
+	}
+
+	return [...variants];
+}
 
 function tokenize(text: string): string[] {
 	const lowered = text.toLowerCase();
@@ -70,7 +108,12 @@ function tokenize(text: string): string[] {
 	if (!matches) {
 		return [];
 	}
-	return matches.filter((token) => token.length > 1 && !STOPWORDS.has(token));
+
+	return matches.flatMap((token) =>
+		expandEnglishToken(token)
+			.map((entry) => entry.trim())
+			.filter((entry) => entry.length > 1 && !STOPWORDS.has(entry))
+	);
 }
 
 function splitIntoChunks(content: string, chunkSize: number, overlap: number): string[] {
@@ -94,58 +137,47 @@ function splitIntoChunks(content: string, chunkSize: number, overlap: number): s
 	return chunks.filter(Boolean);
 }
 
-function toTermFrequency(tokens: string[]): Record<string, number> {
-	const frequency: Record<string, number> = {};
-	for (const token of tokens) {
-		frequency[token] = (frequency[token] ?? 0) + 1;
-	}
-	return frequency;
-}
-
-function buildIdf(chunks: IndexedChunk[]): Record<string, number> {
-	const docFrequency: Record<string, number> = {};
-	for (const chunk of chunks) {
-		const unique = new Set(chunk.tokens);
-		for (const token of unique) {
-			docFrequency[token] = (docFrequency[token] ?? 0) + 1;
-		}
-	}
-
-	const totalDocs = chunks.length;
-	const idf: Record<string, number> = {};
-	for (const [token, frequency] of Object.entries(docFrequency)) {
-		idf[token] = Math.log(1 + (totalDocs - frequency + 0.5) / (frequency + 0.5));
-	}
-	return idf;
-}
-
 export function createRagIndex(payload: RagPayload): RagIndex {
 	const chunks: IndexedChunk[] = [];
+	const chunkById = new Map<string, IndexedChunk>();
 
 	for (const doc of payload.docs) {
 		const parts = splitIntoChunks(doc.content, payload.retrieval.chunkSize, payload.retrieval.overlap);
 		let localIndex = 0;
 		for (const part of parts) {
 			const tokens = tokenize(part);
-			chunks.push({
-				docId: `${doc.id}#${localIndex++}`,
+			const chunkId = `${doc.id}#${localIndex}`;
+			localIndex += 1;
+			const chunk: IndexedChunk = {
+				docId: chunkId,
 				docTitle: doc.title,
 				content: part,
-				tokens,
-				termFrequency: toTermFrequency(tokens),
-				tokenCount: tokens.length
-			});
+				contentTokenCount: tokens.length
+			};
+			chunks.push(chunk);
+			chunkById.set(chunkId, chunk);
 		}
 	}
 
-	const avgChunkLength =
-		chunks.length > 0 ? chunks.reduce((sum, chunk) => sum + chunk.tokenCount, 0) / chunks.length : 1;
+	const searchIndex = new MiniSearch<IndexedChunk>({
+		idField: 'id',
+		fields: ['docTitle', 'content'],
+		storeFields: ['docTitle', 'content'],
+		tokenize,
+		searchOptions: {
+			prefix: true
+		}
+	});
+
+	for (const chunk of chunks) {
+		searchIndex.add({ ...chunk, id: `${chunk.docId}` });
+	}
 
 	return {
 		chunks,
 		topK: payload.retrieval.topK,
-		avgChunkLength,
-		idfByToken: buildIdf(chunks)
+		searchIndex,
+		chunkById
 	};
 }
 
@@ -155,34 +187,25 @@ export function retrieveTopChunks(index: RagIndex, query: string, topK = index.t
 		return [];
 	}
 
-	const queryFrequency = toTermFrequency(queryTokens);
-	const uniqueQuery = Object.keys(queryFrequency);
-	const scored = index.chunks
-		.map((chunk) => {
-			let bm25Score = 0;
-			let matched = 0;
-			for (const token of uniqueQuery) {
-				const tf = chunk.termFrequency[token] ?? 0;
-				if (tf === 0) {
-					continue;
-				}
-				matched += 1;
-				const idf = index.idfByToken[token] ?? 0;
-				const numerator = tf * (BM25_K1 + 1);
-				const denominator =
-					tf + BM25_K1 * (1 - BM25_B + BM25_B * (chunk.tokenCount / Math.max(index.avgChunkLength, 1)));
-				bm25Score += idf * (numerator / denominator) * queryFrequency[token];
-			}
+	const matches = index.searchIndex.search(query, {
+		limit: topK,
+		prefix: true,
+		fuzzy: 0.15
+	}) as Array<{ id: string; score: number; docTitle?: string; content?: string }>;
 
-			const coverage = matched / Math.max(uniqueQuery.length, 1);
-			const normalized = bm25Score + coverage * 0.15;
+	const scored = matches
+		.map((match) => {
+			const chunk = index.chunkById.get(match.id);
+			if (!chunk) {
+				return null;
+			}
 			return {
-				docTitle: chunk.docTitle,
-				content: chunk.content,
-				score: normalized
+				docTitle: match.docTitle ?? chunk.docTitle,
+				content: match.content ?? chunk.content,
+				score: match.score
 			};
 		})
-		.filter((entry) => entry.score > 0)
+		.filter((entry): entry is RetrievedChunk => Boolean(entry))
 		.sort((a, b) => b.score - a.score)
 		.slice(0, topK);
 

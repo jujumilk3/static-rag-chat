@@ -3,7 +3,6 @@
 	import type { UIMessage, SettingsTab } from '$lib/types/ui';
 	import type { RagDoc } from '$lib/rag/types';
 
-	export let isNarrowViewport: boolean;
 	export let mobileLeftRailOpen: boolean;
 	export let activeSessionTitle: string;
 	export let payloadTitle: string;
@@ -57,12 +56,10 @@
 				{hasApiKey ? 'API Connected' : 'API Missing'}
 			</span>
 			<span class="chat-pill">{providerLabel}</span>
-			{#if isNarrowViewport}
-				<button type="button" class="chat-pill ghost mobile-pill-btn" on:click={onClearChat}>New</button>
-				<button type="button" class="chat-pill ghost mobile-pill-btn" on:click={onToggleContext}>
-					{mobileContextOpen ? 'Close Context' : 'Context'}
-				</button>
-			{/if}
+			<button type="button" class="chat-pill ghost mobile-pill-btn mobile-toolbar-btn" on:click={onClearChat}>New</button>
+			<button type="button" class="chat-pill ghost mobile-pill-btn mobile-toolbar-btn" on:click={onToggleContext}>
+				{mobileContextOpen ? 'Close Context' : 'Context'}
+			</button>
 		</div>
 	</header>
 

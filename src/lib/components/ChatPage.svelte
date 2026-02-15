@@ -104,6 +104,10 @@ import { onMount } from 'svelte';
 	let newDocContent = '';
 	let importUrl = '';
 
+	function isNarrowViewportNow() {
+		return typeof window !== 'undefined' ? window.matchMedia(NARROW_MEDIA_QUERY).matches : false;
+	}
+
 	let encodedLength = 0;
 	let urlLength = 0;
 	let urlRisk: 'ok' | 'warn' | 'danger' = 'ok';
@@ -217,12 +221,27 @@ import { onMount } from 'svelte';
 		settingsOpen = false;
 	}
 
-	function toggleMobileContext() {
-		if (!mobileContextOpen) {
+		function openMobileContext() {
+			const narrowViewport = isNarrowViewportNow();
+			isNarrowViewport = narrowViewport;
+			if (!narrowViewport) {
+				return;
+			}
 			closeMobileLeftRail();
+			mobileContextOpen = true;
 		}
-		mobileContextOpen = !mobileContextOpen;
-	}
+
+		function closeMobileContext() {
+			mobileContextOpen = false;
+		}
+
+		function toggleMobileContext() {
+			if (mobileContextOpen) {
+				closeMobileContext();
+				return;
+			}
+			openMobileContext();
+		}
 
 	function toggleMobileLeftRail() {
 		mobileLeftRailOpen = !mobileLeftRailOpen;
@@ -966,7 +985,9 @@ import { onMount } from 'svelte';
 		}
 	}
 
-	onMount(() => {
+		$: shouldRenderContextColumn = !isNarrowViewport || mobileContextOpen;
+
+		onMount(() => {
 		setViewportState();
 		loadTheme();
 		loadLocalSettings();
@@ -1056,7 +1077,6 @@ import { onMount } from 'svelte';
 	/>
 
 	<ChatColumn
-		isNarrowViewport={isNarrowViewport}
 		mobileLeftRailOpen={mobileLeftRailOpen}
 		activeSessionTitle={activeSessionTitle}
 		payloadTitle={payload.title}
@@ -1081,22 +1101,32 @@ import { onMount } from 'svelte';
 		bindComposerTextarea={composerTextarea}
 	/>
 
-	<ContextColumn
-		isNarrowViewport={isNarrowViewport}
-		mobileContextOpen={mobileContextOpen}
-		retrievedChunks={retrievedChunks}
-		showRetrievedContext={showRetrievedContext}
-		providerLabel={PROVIDER_LABELS[provider]}
-		model={model}
-		hasApiKey={hasApiKey}
-		payloadError={payloadError}
-		status={status}
-		onClose={() => (mobileContextOpen = false)}
-		onToggleRetrievedContext={() => {
-			showRetrievedContext = !showRetrievedContext;
-		}}
-		onOpenSettings={openSettings}
-	/>
+		{#if shouldRenderContextColumn}
+			{#if isNarrowViewport}
+				<button
+					type="button"
+					class="context-sheet-backdrop"
+					on:click={closeMobileContext}
+					aria-label="Close context"
+				></button>
+			{/if}
+			<ContextColumn
+				isNarrowViewport={isNarrowViewport}
+				mobileContextOpen={mobileContextOpen}
+				retrievedChunks={retrievedChunks}
+				showRetrievedContext={showRetrievedContext}
+				providerLabel={PROVIDER_LABELS[provider]}
+				model={model}
+				hasApiKey={hasApiKey}
+				payloadError={payloadError}
+				status={status}
+				onClose={closeMobileContext}
+				onToggleRetrievedContext={() => {
+					showRetrievedContext = !showRetrievedContext;
+				}}
+				onOpenSettings={openSettings}
+			/>
+		{/if}
 </div>
 
 <SettingsPanel

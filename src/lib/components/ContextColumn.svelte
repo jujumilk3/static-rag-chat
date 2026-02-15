@@ -18,10 +18,6 @@
 	export let onOpenSettings: (tab: SettingsTab) => void;
 </script>
 
-{#if isNarrowViewport && mobileContextOpen}
-	<button type="button" class="context-sheet-backdrop" on:click={onClose} aria-label="Close context"></button>
-{/if}
-
 <aside class="context-column" class:mobile-open={mobileContextOpen && isNarrowViewport}>
 	{#if isNarrowViewport}
 		<div class="mobile-context-head">
