@@ -21,7 +21,7 @@ export interface RagIndex {
 	chunkById: Map<string, IndexedChunk>;
 }
 
-const TOKEN_REGEX = /[A-Za-z0-9_\-]+/g;
+const TOKEN_REGEX = /[\p{L}\p{N}_-]+/gu;
 const STOPWORDS = new Set([
 	'the',
 	'and',
@@ -62,6 +62,42 @@ const STOPWORDS = new Set([
 ]);
 
 const ENGLISH_STEM_SUFFIXES = ['ingly', 'edly', 'ing', 'ed', 'ies', 'es', 'ly', 's'];
+const KOREAN_PARTICLE_SUFFIXES = [
+	'으로부터',
+	'에서',
+	'에게',
+	'에게서',
+	'으로',
+	'로',
+	'에도',
+	'에게도',
+	'에도',
+	'에서부터',
+	'까지',
+	'만',
+	'라도',
+	'과',
+	'와',
+	'을',
+	'를',
+	'의',
+	'가',
+	'이',
+	'은',
+	'는',
+	'에서',
+	'에',
+	'도',
+	'랑',
+	'와는',
+	'과는',
+	'으로는',
+	'로는',
+	'에게는',
+	'의는',
+	'처럼',
+	'같이'
+];
 
 function expandEnglishToken(token: string): string[] {
 	if (token.length <= 2) {
@@ -102,6 +138,29 @@ function expandEnglishToken(token: string): string[] {
 	return [...variants];
 }
 
+function isKoreanToken(token: string): boolean {
+	return /[가-힣]/.test(token);
+}
+
+function expandKoreanToken(token: string): string[] {
+	const variants = new Set<string>([token]);
+
+	for (const suffix of KOREAN_PARTICLE_SUFFIXES) {
+		if (token.length <= suffix.length + 1) {
+			continue;
+		}
+		if (!token.endsWith(suffix)) {
+			continue;
+		}
+		const stem = token.slice(0, -suffix.length);
+		if (stem.length > 1) {
+			variants.add(stem);
+		}
+	}
+
+	return [...variants];
+}
+
 function tokenize(text: string): string[] {
 	const lowered = text.toLowerCase();
 	const matches = lowered.match(TOKEN_REGEX);
@@ -109,11 +168,12 @@ function tokenize(text: string): string[] {
 		return [];
 	}
 
-	return matches.flatMap((token) =>
-		expandEnglishToken(token)
+	return matches.flatMap((token) => {
+		const variants = isKoreanToken(token) ? expandKoreanToken(token) : expandEnglishToken(token);
+		return variants
 			.map((entry) => entry.trim())
-			.filter((entry) => entry.length > 1 && !STOPWORDS.has(entry))
-	);
+			.filter((entry) => entry.length > 1 && !STOPWORDS.has(entry));
+	});
 }
 
 function splitIntoChunks(content: string, chunkSize: number, overlap: number): string[] {

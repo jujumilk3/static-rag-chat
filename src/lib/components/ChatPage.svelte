@@ -555,34 +555,32 @@ import { onMount } from 'svelte';
 		status = 'Conversation renamed';
 	}
 
-	function savePayloadDraft() {
+	function payloadDraftStorageKey(payloadToScope: RagPayload) {
+		return `${PAYLOAD_DRAFT_KEY}:${buildPayloadDigest(payloadToScope)}`;
+	}
+
+	function cleanLegacyPayloadDraftKey() {
 		if (typeof window === 'undefined') {
 			return;
 		}
-		window.localStorage.setItem(PAYLOAD_DRAFT_KEY, payloadToPrettyJson(payload));
+		window.localStorage.removeItem(PAYLOAD_DRAFT_KEY);
 	}
 
-	function loadPayloadDraft(): boolean {
+	function savePayloadDraft(targetPayload?: RagPayload) {
 		if (typeof window === 'undefined') {
-			return false;
+			return;
 		}
-
-		const raw = window.localStorage.getItem(PAYLOAD_DRAFT_KEY);
-		if (!raw) {
-			return false;
+		const payloadForStorage = targetPayload ?? payload;
+		if (!payloadForStorage) {
+			return;
 		}
-
 		try {
-			const parsed = JSON.parse(raw);
-			const normalized = normalizePayload(parsed);
-			commitPayload(normalized, {
-				syncHash: false,
-				statusMessage: `Loaded local draft (${normalized.docs.length} doc(s))`
-			});
-			return true;
+			window.localStorage.setItem(
+				payloadDraftStorageKey(payloadForStorage),
+				payloadToPrettyJson(payloadForStorage)
+			);
 		} catch {
-			window.localStorage.removeItem(PAYLOAD_DRAFT_KEY);
-			return false;
+			return;
 		}
 	}
 
@@ -630,16 +628,28 @@ import { onMount } from 'svelte';
 		}
 	}
 
-	function loadPayloadFromHash(): boolean {
+	function loadPayloadFromHash(options: { fallbackToDefault?: boolean } = {}): boolean {
 		if (typeof window === 'undefined') {
 			return false;
 		}
 
+		const fallbackToDefault = Boolean(options.fallbackToDefault);
+
 		const { payload: parsed, error } = parsePayloadFromHash(window.location.hash);
 		if (parsed) {
+			cleanLegacyPayloadDraftKey();
 			commitPayload(parsed, {
 				syncHash: false,
 				statusMessage: `URL payload loaded (${parsed.docs.length} doc(s))`
+			});
+			return true;
+		}
+
+		if (fallbackToDefault && window.location.hash.length === 0) {
+			cleanLegacyPayloadDraftKey();
+			commitPayload(createDefaultPayload(), {
+				syncHash: false,
+				statusMessage: 'Loaded default payload from URL'
 			});
 			return true;
 		}
@@ -992,18 +1002,18 @@ import { onMount } from 'svelte';
 		loadTheme();
 		loadLocalSettings();
 		loadLeftRailPreference();
-		const loadedFromHash = loadPayloadFromHash();
-		if (!loadedFromHash) {
-			const canLoadDraft = window.location.hash.length === 0;
-			const loadedDraft = canLoadDraft ? loadPayloadDraft() : false;
-			if (canLoadDraft && !loadedDraft) {
-				syncHashWithPayload();
-			}
+		const loadedFromHash = loadPayloadFromHash({
+			fallbackToDefault: window.location.hash.length === 0
+		});
+		if (!loadedFromHash && window.location.hash.length === 0) {
+			syncHashWithPayload();
 		}
 		ensureSessionForCurrentPayload();
 
 		const onHashChange = () => {
-			loadPayloadFromHash();
+			loadPayloadFromHash({
+				fallbackToDefault: window.location.hash.length === 0
+			});
 			ensureSessionForCurrentPayload();
 		};
 
