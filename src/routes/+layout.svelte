@@ -5,6 +5,7 @@
 </script>
 
 <svelte:head>
+	<title>static rag chat</title>
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
